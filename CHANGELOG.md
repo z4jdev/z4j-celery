@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to `z4j-celery` are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.0.1] - 2026-04-21
+
+### Changed
+
+- Lowered minimum Python version from 3.13 to 3.11. This package now supports Python 3.11, 3.12, 3.13, and 3.14.
+- Documentation polish: standardized on ASCII hyphens across README, CHANGELOG, and docstrings for consistent rendering on PyPI.
+
+
+## [1.0.0] - 2026-04
+
+### Added
+
+<!--
+TODO: describe what ships in this first public release. One bullet per
+capability. Examples:
+- First public release.
+- <Headline feature>
+- <Second feature>
+- N unit tests.
+-->
+
+- First public release.
+
+## Links
+
+- Repository: <https://github.com/z4jdev/z4j-celery>
+- Issues: <https://github.com/z4jdev/z4j-celery/issues>
+- PyPI: <https://pypi.org/project/z4j-celery/>
+
+[Unreleased]: https://github.com/z4jdev/z4j-celery/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/z4jdev/z4j-celery/releases/tag/v1.0.0
