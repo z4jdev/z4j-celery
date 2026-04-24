@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-04-24
+
+### Fixed
+
+- **Worker agents now report the correct host framework.** A Django+Celery worker process now sends `framework: django` in its hello frame; same for Flask+Celery (`flask`) and FastAPI+Celery (`fastapi`). Standalone-Celery (no web framework) still reports `bare`. Previously every Celery worker reported `framework: bare` because z4j-bare's `install_agent` had no way to override the default `BareFrameworkAdapter`. The dashboard's Framework column now shows the operator's actual stack instead of always "bare". Fix is wire-level - re-mint of agent tokens not required.
+
+### Changed
+
+- `_on_worker_init` now passes the resolved framework class (via the existing `_resolve_framework_adapter` precedence chain: FastAPI → Flask → Django → bare) to `install_agent(framework=...)`. Requires z4j-bare >= 1.0.5 for the new kwarg.
+- Bumped minimum `z4j-core` to `>=1.0.3` and `z4j-bare` to `>=1.0.5`.
+
 ## [1.0.1] - 2026-04-21
 
 ### Changed

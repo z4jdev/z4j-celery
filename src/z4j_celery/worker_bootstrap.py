@@ -255,6 +255,13 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
         from z4j_celery.engine import CeleryEngineAdapter
 
         engine = CeleryEngineAdapter(celery_app=celery_app)
+        # Detect the host framework (Django / Flask / FastAPI / bare)
+        # so the agent's hello frame reports the right framework_name
+        # and the brain dashboard's Framework column shows the
+        # operator's actual stack instead of "bare". install_agent
+        # accepts a class and instantiates it with the resolved Config.
+        # See z4j-bare 1.0.5 for the kwarg.
+        framework_cls = _resolve_framework_adapter(celery_app)
         # ``install_agent`` reads brain_url / token / project_id /
         # hmac_secret from env vars when not passed explicitly - but
         # ``Z4J_DEV_MODE`` is intentionally NOT env-read (security
@@ -267,7 +274,11 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
         dev_mode = _os.environ.get("Z4J_DEV_MODE", "").lower() in (
             "1", "true", "yes", "on",
         )
-        runtime = install_agent(engines=[engine], dev_mode=dev_mode)
+        runtime = install_agent(
+            engines=[engine],
+            framework=framework_cls,
+            dev_mode=dev_mode,
+        )
     except Exception:  # noqa: BLE001
         logger.exception(
             "z4j worker bootstrap: failed to start agent runtime - "
@@ -280,8 +291,7 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
         "z4j worker bootstrap: agent runtime started "
         "(celery_app=%s, framework=%s)",
         getattr(celery_app, "main", None) or celery_app,
-        _resolve_framework_adapter(celery_app).__name__
-        if _resolve_framework_adapter(celery_app) else "bare",
+        framework_cls.__name__ if framework_cls else "bare",
     )
 
 

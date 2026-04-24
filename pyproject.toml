@@ -1,6 +1,6 @@
 [project]
 name = "z4j-celery"
-version = "1.0.2"
+version = "1.0.3"
 description = "z4j Celery queue engine adapter (Apache 2.0)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,8 +19,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "z4j-core>=1.0.2",
-    "z4j-bare>=1.0.3",
+    "z4j-core>=1.0.3",
+    "z4j-bare>=1.0.5",
     "celery>=5.6.3",
 ]
 
