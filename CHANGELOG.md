@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-28
+
+### Fixed
+
+- **Agent-HIGH-1 (round-6 audit): broker poison-message ack+drop+counter.** Pre-fix ``events/broker.py:166`` requeued a poisoned (un-decodable) message AND re-raised into Kombu, causing a tight ~2-second reconnect loop in the customer's Celery worker process - visible CPU/IO storm in the host stack. Now the agent's broker-events listener acks the poisoned message, drops it, and bumps a counter (``z4j_celery.broker_events_poisoned_total``) so operators can see the rate. The worker stays running. Operators with high-cardinality task names should monitor that counter.
+- **Agent-HIGH-2 (round-6 audit): PID-guard prefork stale loop.** ``engine.py:122`` captured the asyncio loop reference in the parent process; Celery's prefork pool then forked workers that inherited the stale ref. Every task in prefork mode logged an error stacktrace; events could be silently dropped if the parent had moved on. New PID-guard refuses to use a captured loop from a different PID and re-creates the sink lazily in the child.
+- **(Pre-round-6) ``submit_task`` now honors ``task_always_eager``.** Pre-fix the adapter unconditionally called ``app.send_task(name, ...)`` which bypasses the local task registry - so ``task_always_eager=True`` (used in CI / dev mode) had no effect on brain-dispatched fires, and the operator's local-test setup couldn't verify execution. Now prefers ``app.tasks[name].apply_async(...)`` when the task is locally registered (also picks up the task's decorator options: default queue, retry policy, time limits) and falls back to ``send_task`` for at-distance scheduling. Wire-identical against a real broker; only behavior change is for in-process eager mode.
+
+### Changed
+
+- **v1.1.0 ecosystem family bump.** Pinned ``z4j-core>=1.1.0`` and ``z4j-bare>=1.1.0`` so a Celery engine installed at 1.1.0 always resolves a known-good 1.1.0 slice of brain + agent. The driving fix lives in z4j-bare 1.1.0: the agent dispatcher now correctly routes ``schedule.fire`` to the queue engine's ``submit_task`` (this adapter), instead of rejecting every brain-side scheduler tick before the engine ever saw it. Operators on brain 1.1.0 + scheduler 1.1.0 with z4j-celery 1.0.x had every scheduled task silently fail at the agent dispatcher - this floor refuses that mixed install.
+
 ## [1.0.3] - 2026-04-24
 
 ### Fixed

@@ -1,6 +1,6 @@
 [project]
 name = "z4j-celery"
-version = "1.0.3"
+version = "1.1.0"
 description = "z4j Celery queue engine adapter (Apache 2.0)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,8 +19,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "z4j-core>=1.0.3",
-    "z4j-bare>=1.0.5",
+    # Floors bumped to >=1.1.0 for the v1.1.0 ecosystem family
+    # release. z4j-bare 1.1.0 fixes the schedule.fire dispatcher
+    # path: pre-1.1 the agent rejected every brain-side scheduler
+    # tick before the celery engine ever saw it, so this adapter
+    # was effectively unreachable from the new scheduler service.
+    "z4j-core>=1.1.0",
+    "z4j-bare>=1.1.0",
     "celery>=5.6.3",
 ]
 

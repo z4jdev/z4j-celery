@@ -80,6 +80,20 @@ class CeleryBrokerEventsMonitor:
         # to evict oldest).
         self._name_cache: OrderedDict[str, str] = OrderedDict()
         self._NAME_CACHE_MAX = 50_000
+        # Round-6 audit fix Agent-HIGH-1 (Apr 2026): poison-message
+        # drop counter. Operators can probe this via a future
+        # observability endpoint to detect malformed events that
+        # are silently being dropped from the broker stream.
+        self._poison_drop_count: int = 0
+
+    @property
+    def poison_drop_count(self) -> int:
+        """Number of poisoned messages dropped since process start.
+
+        Round-6 audit fix Agent-HIGH-1 surface. Operators read
+        this via the agent's debug endpoints / metrics.
+        """
+        return self._poison_drop_count
 
     def start(self) -> None:
         """Enable task events on the worker + start the receiver thread."""
@@ -163,6 +177,22 @@ class CeleryBrokerEventsMonitor:
             # We now use explicit ack-after-success: at-least-once
             # delivery, with the brain's ``event_id`` UNIQUE
             # constraint dedup'ing any retries.
+            # Round-6 audit fix Agent-HIGH-1 (Apr 2026): on
+            # handler failure, ACK + drop + counter (poison-message
+            # dead-letter pattern), do NOT requeue + re-raise.
+            # Pre-fix the requeue+raise path caused a tight 2s
+            # reconnect loop on the customer's celery worker
+            # whenever a malformed event hit a handler that the
+            # safe_boundary wrapper didn't cover - CPU/IO storm
+            # visible to the host process.
+            #
+            # The brain side dedups on event_id, so at-least-once
+            # was ALREADY broken by the existing safe_boundary
+            # swallow on each handler. The only thing requeue+raise
+            # bought us was a forever-loop on poisoned data.
+            # Now: ack the message (drops it from the broker),
+            # increment a poison counter, log loudly. Operators
+            # see "N poisoned events dropped" instead of CPU pegged.
             try:
                 events = body if isinstance(body, list) else [body]
                 for ev in events:
@@ -170,30 +200,23 @@ class CeleryBrokerEventsMonitor:
                     if handler is not None:
                         handler(ev)
             except Exception:
-                # Re-raise after marking message UNacked. Don't
-                # try/except logger.exception here - we want this
-                # to surface to the kombu drain_events loop's
-                # reconnect path so the broker re-delivers.
                 logger.exception(
-                    "z4j broker events: handler raised; message "
-                    "will be re-delivered",
+                    "z4j broker events: handler raised on poisoned "
+                    "message; dropping and continuing (audit Agent-HIGH-1)",
                 )
-                try:
-                    message.requeue()
-                except Exception:  # noqa: BLE001
-                    # Requeue itself failed (broker mid-disconnect).
-                    # Best-effort - the broker will re-deliver on
-                    # reconnect even if requeue is silently dropped.
-                    pass
-                raise
-            else:
+                self._poison_drop_count += 1
                 try:
                     message.ack()
                 except Exception:  # noqa: BLE001
-                    # Ack failed (broker disconnect mid-handler).
-                    # The broker will re-deliver on reconnect; the
-                    # brain's event_id dedup absorbs the duplicate.
                     pass
+                return
+            try:
+                message.ack()
+            except Exception:  # noqa: BLE001
+                # Ack failed (broker disconnect mid-handler).
+                # The broker will re-deliver on reconnect; the
+                # brain's event_id dedup absorbs the duplicate.
+                pass
 
         while not self._stop.is_set():
             try:

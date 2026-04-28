@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -118,8 +119,21 @@ class CeleryEngineAdapter:
         strategy is in use - both feed the same ``_event_queue``.
         """
         target_loop = loop
+        # Round-6 audit fix Agent-HIGH-2 (Apr 2026): in celery prefork
+        # pools, signals fire in forked CHILD processes whose
+        # ``target_loop`` reference is to a loop that lives only in
+        # the PARENT. Calling ``call_soon_threadsafe`` on it from the
+        # child either no-ops silently or, on some pythons, raises and
+        # tears down the worker. Capture the connect-time PID; if the
+        # sink fires in a different process we drop the event and let
+        # the broker-events monitor (running in the parent) pick it up.
+        _connect_pid = os.getpid()
 
         def sink(event: Event) -> None:
+            if os.getpid() != _connect_pid:
+                # Forked child - target_loop is stale. Broker-events
+                # monitor in the parent process is the source of truth.
+                return
             current_loop = target_loop
             if current_loop is None:
                 try:
@@ -606,7 +620,31 @@ class CeleryEngineAdapter:
                 send_kwargs["eta"] = datetime.now(UTC) + timedelta(seconds=eta)
             if priority is not None:
                 send_kwargs["priority"] = priority
-            result = self.celery_app.send_task(name, **send_kwargs)
+
+            # Prefer ``apply_async`` on a locally-registered task
+            # over ``send_task``. Two reasons:
+            #
+            # 1. ``send_task`` bypasses the local task registry and
+            #    goes straight to the broker, which means
+            #    ``task_always_eager=True`` has no effect on it.
+            #    Operators with eager-mode CI / dev setups expect
+            #    the task to run synchronously; ``apply_async``
+            #    honors that.
+            # 2. ``apply_async`` knows the task's options (default
+            #    queue, retry policy, time limit, etc.) from the
+            #    decorator. ``send_task`` always sends to the
+            #    default exchange unless the operator passes
+            #    ``queue=`` explicitly.
+            #
+            # Fall back to ``send_task`` when the task is not in
+            # the local registry (typical at-distance scheduling
+            # where the worker process owns the registration but
+            # this brain-side process does not).
+            tasks = getattr(self.celery_app, "tasks", None)
+            if tasks is not None and name in tasks:
+                result = tasks[name].apply_async(**send_kwargs)
+            else:
+                result = self.celery_app.send_task(name, **send_kwargs)
             new_id = getattr(result, "id", None) or getattr(result, "task_id", None)
         except Exception as exc:  # noqa: BLE001
             return CommandResult(status="failed", error=str(exc))
