@@ -1,6 +1,6 @@
 [project]
 name = "z4j-celery"
-version = "1.1.0"
+version = "1.1.2"
 description = "z4j Celery queue engine adapter (Apache 2.0)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,14 @@ dependencies = [
     "z4j-bare>=1.1.0",
     "celery>=5.6.3",
 ]
+
+[project.scripts]
+# 1.1.2+ console script. Both ``z4j-celery`` (pip-installed entry
+# point) and ``python -m z4j_celery`` (module form) work and
+# dispatch to the same code path. Engine adapters are libraries,
+# so the CLI is doctor / check / status / version only - no
+# ``run`` or ``restart`` (those belong to framework adapters).
+z4j-celery = "z4j_celery.cli:main"
 
 [project.urls]
 Changelog = "https://github.com/z4jdev/z4j-celery/blob/main/CHANGELOG.md"
