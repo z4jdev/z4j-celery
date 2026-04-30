@@ -32,7 +32,7 @@ from z4j_celery.worker_bootstrap import register_worker_bootstrap
 # Opt-out: set ``Z4J_DISABLED=1`` in the worker's environment.
 register_worker_bootstrap()
 
-__version__ = "1.1.0"
+__version__ = "1.3.0"
 
 __all__ = [
     "CeleryEngineAdapter",
