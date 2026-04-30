@@ -87,7 +87,7 @@ async def test_schedule_fire_end_to_end_through_dispatcher(
     engine = CeleryEngineAdapter(celery_app=fake_app)
     dispatcher = CommandDispatcher(
         engines={"celery": engine},
-        schedulers={},  # no scheduler adapter — proves the v1.1.0
+        schedulers={},  # no scheduler adapter, proves the v1.1.0
                         # bare-dispatcher schedule.fire fix works
                         # without one (a celery WORKER agent has no
                         # celery-beat adapter registered).

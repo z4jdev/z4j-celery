@@ -25,7 +25,7 @@ with z4j-celerybeat to manage periodic / cron schedules.
 | Rate limit | broker-side via Celery's control channel |
 | Reconcile task | via the result backend |
 
-The widest feature coverage of any z4j engine adapter — Celery's rich
+The widest feature coverage of any z4j engine adapter, Celery's rich
 remote-control surface lets z4j ship capabilities other engines can't
 match (pool restart with zero task loss, broker-side rate limiting).
 
@@ -46,7 +46,7 @@ pip install z4j-bare    z4j-celery z4j-celerybeat   # framework-free worker
 
 ## Pairs with
 
-- [`z4j-celerybeat`](https://github.com/z4jdev/z4j-celerybeat) — schedule adapter for Celery Beat / django-celery-beat
+- [`z4j-celerybeat`](https://github.com/z4jdev/z4j-celerybeat), schedule adapter for Celery Beat / django-celery-beat
 
 ## Reliability
 
@@ -61,7 +61,7 @@ Full docs at [z4j.dev/engines/celery/](https://z4j.dev/engines/celery/).
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE).
 
 ## Links
 
