@@ -52,7 +52,7 @@ pip install z4j-bare    z4j-celery z4j-celerybeat   # framework-free worker
 
 - No exception from the adapter ever propagates back into your Celery
   workers or signal handlers.
-- Events buffer locally when the brain is unreachable; your workers
+- Events buffer locally when z4j is unreachable; your workers
   never slow down or block on network I/O.
 
 ## Documentation
