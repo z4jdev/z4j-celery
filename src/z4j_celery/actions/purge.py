@@ -23,7 +23,7 @@ from typing import Any
 
 from z4j_core.models import CommandResult
 
-logger = logging.getLogger("z4j.agent.celery.actions.purge")
+logger = logging.getLogger("z4j.adapter.celery.actions.purge")
 
 
 #: Soft refusal threshold. Above this depth the agent refuses to

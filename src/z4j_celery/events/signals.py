@@ -40,7 +40,7 @@ from z4j_celery.events.mapper import (
     build_task_succeeded_event,
 )
 
-logger = logging.getLogger("z4j.agent.celery.signals")
+logger = logging.getLogger("z4j.adapter.celery.signals")
 
 
 EventSink = Callable[[Event], None]

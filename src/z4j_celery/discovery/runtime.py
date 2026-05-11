@@ -18,7 +18,7 @@ from z4j_core.models import TaskDefinition
 
 from z4j_celery.meta import get_meta
 
-logger = logging.getLogger("z4j.agent.celery.discovery.runtime")
+logger = logging.getLogger("z4j.adapter.celery.discovery.runtime")
 
 _ENGINE = "celery"
 

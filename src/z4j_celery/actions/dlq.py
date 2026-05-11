@@ -20,7 +20,7 @@ from z4j_core.models import CommandResult
 
 from z4j_celery.actions.retry import retry_task_action
 
-logger = logging.getLogger("z4j.agent.celery.actions.dlq")
+logger = logging.getLogger("z4j.adapter.celery.actions.dlq")
 
 
 async def requeue_dead_letter_action(

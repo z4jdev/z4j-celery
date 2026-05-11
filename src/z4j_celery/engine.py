@@ -19,7 +19,7 @@ import asyncio
 import inspect
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +50,7 @@ from z4j_celery.capabilities import DEFAULT_CAPABILITIES
 from z4j_celery.discovery import discover_runtime, discover_static, merge_discoveries
 from z4j_celery.events.signals import CelerySignalHooks
 
-logger = logging.getLogger("z4j.agent.celery.engine")
+logger = logging.getLogger("z4j.adapter.celery.engine")
 
 _ENGINE_NAME = "celery"
 
@@ -119,8 +119,8 @@ class CeleryEngineAdapter:
         strategy is in use - both feed the same ``_event_queue``.
         """
         target_loop = loop
-        # Round-6 audit fix Agent-HIGH-2 (Apr 2026): in celery prefork
-        # pools, signals fire in forked CHILD processes whose
+        # In celery prefork pools, signals fire in forked CHILD
+        # processes whose
         # ``target_loop`` reference is to a loop that lives only in
         # the PARENT. Calling ``call_soon_threadsafe`` on it from the
         # child either no-ops silently or, on some pythons, raises and
@@ -166,10 +166,50 @@ class CeleryEngineAdapter:
         )
         from z4j_celery.events.broker import CeleryBrokerEventsMonitor
 
+        # When running side-by-side with a
+        # specific celery worker process (the typical "1 z4j-bare per
+        # worker container" topology), pair the broker monitor with
+        # the LOCAL celery hostname so it ignores events emitted by
+        # OTHER workers on the same broker. Without this filter, every
+        # agent receives every event via celery's fanout exchange and
+        # the brain sees N copies (one per agent) of every task event,
+        # multiplying ingest contention by N.
+        #
+        # Auto-detection precedence:
+        # 1. ``Z4J_CELERY_LOCAL_HOSTNAME`` env var (operator override).
+        # 2. ``CELERY_HOSTNAME`` env var (some celery deployments set
+        #    this).
+        # 3. None - filter disabled, monitor accepts every event
+        #    (legacy behaviour for "one z4j-bare watching N celery
+        #    workers" deployments). Brain-side dedupe (Bug X-B) is
+        #    the safety net here.
+        local_hostname = (
+            os.environ.get("Z4J_CELERY_LOCAL_HOSTNAME", "").strip()
+            or os.environ.get("CELERY_HOSTNAME", "").strip()
+        )
+        hostname_filter: "Callable[[str], bool] | None" = None
+        if local_hostname:
+            _local = local_hostname
+
+            def _match_local(host: str, _local: str = _local) -> bool:
+                return host == _local
+
+            hostname_filter = _match_local
+            logger.info(
+                "z4j celery: broker events monitor filtering by hostname=%s",
+                local_hostname,
+            )
+        else:
+            logger.info(
+                "z4j celery: broker events monitor accepts ALL events "
+                "(no Z4J_CELERY_LOCAL_HOSTNAME set; relying on brain-side dedupe)",
+            )
+
         self._broker_monitor = CeleryBrokerEventsMonitor(
             celery_app=self.celery_app,
             sink=sink,
             redaction=self.redaction,
+            hostname_filter=hostname_filter,
         )
         self._broker_monitor.start()
 

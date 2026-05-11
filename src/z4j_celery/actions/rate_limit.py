@@ -21,7 +21,7 @@ from typing import Any
 
 from z4j_core.models import CommandResult
 
-logger = logging.getLogger("z4j.agent.celery.actions.rate_limit")
+logger = logging.getLogger("z4j.adapter.celery.actions.rate_limit")
 
 _BROADCAST_TIMEOUT = 10.0
 

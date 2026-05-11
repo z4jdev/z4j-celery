@@ -12,7 +12,7 @@ from typing import Any
 
 from z4j_core.models import CommandResult
 
-logger = logging.getLogger("z4j.agent.celery.actions.cancel")
+logger = logging.getLogger("z4j.adapter.celery.actions.cancel")
 
 
 async def cancel_task_action(

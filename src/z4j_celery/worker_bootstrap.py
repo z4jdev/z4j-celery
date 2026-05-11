@@ -52,7 +52,7 @@ from typing import Any
 
 from z4j_bare.safety import safe_boundary
 
-logger = logging.getLogger("z4j.celery.worker_bootstrap")
+logger = logging.getLogger("z4j.adapter.celery.worker_bootstrap")
 
 #: Guard against double-registration if the module is imported more
 #: than once (re-imports under pytest, importlib.reload, etc.).

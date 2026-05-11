@@ -28,7 +28,7 @@ from pathlib import Path
 
 from z4j_core.models import TaskDefinition
 
-logger = logging.getLogger("z4j.agent.celery.discovery.static")
+logger = logging.getLogger("z4j.adapter.celery.discovery.static")
 
 _ENGINE = "celery"
 

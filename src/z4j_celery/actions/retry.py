@@ -20,7 +20,7 @@ from typing import Any
 
 from z4j_core.models import CommandResult
 
-logger = logging.getLogger("z4j.agent.celery.actions.retry")
+logger = logging.getLogger("z4j.adapter.celery.actions.retry")
 
 
 #: Celery's broker-level priority is an integer in 0-9 (RabbitMQ)
@@ -111,7 +111,7 @@ async def retry_task_action(
     args, kwargs = _resolve_args(async_result, override_args, override_kwargs)
 
     # Validate eta BEFORE calling send_task so an out-of-range
-    # value never reaches the broker (audit H14).
+    # Value never reaches the broker.
     try:
         eta_dt = _eta_from_timestamp(eta)
     except ValueError as exc:
@@ -154,7 +154,7 @@ async def retry_task_action(
 
 #: Hard ceiling on the number of tasks a single ``bulk_retry``
 #: command can touch, regardless of the caller-supplied ``max``.
-#: Audit H12: a misbehaving (or compromised) brain command with
+#: A misbehaving (or compromised) brain command with
 #: ``max=10_000_000`` would otherwise loop 10M times in one
 #: coroutine, blocking the event loop and flooding both the broker
 #: and the result backend. 10k is large enough for any reasonable
@@ -209,7 +209,7 @@ async def bulk_retry_action(
             ),
         )
 
-    # Audit H12: clamp BOTH the caller-provided cap AND the input
+    # Clamp BOTH the caller-provided cap AND the input
     # length to a hard ceiling. A compromised caller cannot bypass
     # this by passing ``max=2**31``.
     effective_cap = min(int(max), _BULK_RETRY_HARD_CAP)

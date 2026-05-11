@@ -18,7 +18,7 @@ from typing import Any
 
 from z4j_core.models import CommandResult
 
-logger = logging.getLogger("z4j.agent.celery.actions.worker")
+logger = logging.getLogger("z4j.adapter.celery.actions.worker")
 
 #: Hard timeout for Celery control broadcasts (seconds).
 _BROADCAST_TIMEOUT = 10.0
