@@ -189,3 +189,213 @@ class TestEventQueue:
         )
         adapter._enqueue_event(event)  # noqa: SLF001
         assert adapter._event_queue.qsize() == 1  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Round-7 audit, R7-H1: worker_conf credential leak via inspector.conf()
+# ---------------------------------------------------------------------------
+
+
+class _FakeInspector:
+    """Stand-in for ``celery_app.control.inspect()``.
+
+    Records arguments + returns canned data per call. Used only by the
+    R7-H1 regression tests; the broader engine tests do not exercise
+    ``get_worker_details`` because the rest of the FakeCeleryApp does
+    not implement ``inspect``.
+    """
+
+    def __init__(self, conf_payload: dict[str, dict[str, object]]) -> None:
+        self._conf_payload = conf_payload
+
+    def stats(self) -> dict[str, object]:
+        return {}
+
+    def active(self) -> dict[str, object]:
+        return {}
+
+    def active_queues(self) -> dict[str, object]:
+        return {}
+
+    def registered(self) -> dict[str, object]:
+        return {}
+
+    def conf(self) -> dict[str, dict[str, object]]:
+        return self._conf_payload
+
+
+class _ControlWithInspect:
+    """Wraps the existing FakeControl-style stub with an ``inspect``
+    constructor that returns a canned ``_FakeInspector``."""
+
+    def __init__(self, inspector: _FakeInspector) -> None:
+        self._inspector = inspector
+
+    def inspect(
+        self,
+        *,
+        destination: list[str] | None = None,  # noqa: ARG002
+        timeout: float | None = None,  # noqa: ARG002
+    ) -> _FakeInspector:
+        return self._inspector
+
+
+class TestGetWorkerDetailsR7H1:
+    """R7-H1: ``get_worker_details`` must not expose credentialed
+    Celery conf keys to the brain (and thence to ProjectRole.VIEWER).
+
+    The adapter's ``inspector.conf()`` call returns the FULL Celery
+    ``app.conf`` dict on a real cluster, including ``broker_url`` /
+    ``result_backend`` / ``broker_transport_options`` / ``beat_schedule``.
+    Pre-1.6.6 the adapter shipped the dict verbatim. 1.6.6 introduces
+    an allowlist so only operationally-useful tuning knobs are sent
+    upstream.
+    """
+
+    def test_get_worker_details_strips_credentialed_conf_keys_r7_h1(
+        self, fake_app,
+    ) -> None:
+        # Fabricate a worker conf that mixes the dangerous keys an
+        # operator may have set in their Celery app (broker / backend
+        # URLs with secrets, transport options carrying TLS keys, a
+        # beat schedule that may embed PII) with the benign tuning
+        # knobs the dashboard legitimately surfaces.
+        dangerous_conf = {
+            # These MUST be stripped.
+            "broker_url": "redis://:supersecret@redis.internal:6379/0",
+            "result_backend": "db+postgresql://celery:pgpass@db.internal/celery",
+            "broker_transport_options": {
+                "region": "us-east-1",
+                "aws_access_key_id": "AKIA...",
+                "aws_secret_access_key": "AAAAAAAAAAAAAAAAAAAA",
+            },
+            "beat_schedule": {
+                "send-weekly-report": {
+                    "task": "myapp.tasks.report",
+                    "schedule": 60.0,
+                    "kwargs": {"recipient": "ceo@example.com"},
+                },
+            },
+            # And these MUST be kept (operationally useful).
+            "task_serializer": "json",
+            "result_serializer": "json",
+            "accept_content": ["json"],
+            "task_default_queue": "celery",
+            "worker_concurrency": 4,
+            "worker_prefetch_multiplier": 1,
+            "task_acks_late": True,
+            "task_reject_on_worker_lost": True,
+            "broker_pool_limit": 10,
+            "broker_heartbeat": 120,
+            "task_time_limit": 600,
+            "task_soft_time_limit": 300,
+            "worker_max_tasks_per_child": 1000,
+            "worker_max_memory_per_child": 200_000,
+            "timezone": "UTC",
+            "enable_utc": True,
+        }
+        inspector = _FakeInspector(
+            conf_payload={"celery@worker-1": dangerous_conf},
+        )
+        fake_app.control = _ControlWithInspect(inspector)
+        adapter = CeleryEngineAdapter(celery_app=fake_app)
+
+        details = adapter.get_worker_details()
+
+        assert "celery@worker-1" in details, (
+            "expected the inspector's conf payload to land under the "
+            "worker hostname key; got %r" % (details,)
+        )
+        conf = details["celery@worker-1"]["conf"]
+        assert isinstance(conf, dict)
+
+        # 1. ALL credentialed keys must be stripped.
+        for forbidden in (
+            "broker_url",
+            "result_backend",
+            "broker_transport_options",
+            "beat_schedule",
+        ):
+            assert forbidden not in conf, (
+                "R7-H1: %r leaked through the allowlist; the brain "
+                "would persist it into workers.metadata.conf and "
+                "expose it to ProjectRole.VIEWER" % (forbidden,)
+            )
+
+        # 2. ALL benign tuning knobs MUST survive (the dashboard relies
+        # on them; an over-aggressive denylist would regress the
+        # worker-detail page).
+        for expected_key, expected_value in (
+            ("task_serializer", "json"),
+            ("result_serializer", "json"),
+            ("accept_content", ["json"]),
+            ("task_default_queue", "celery"),
+            ("worker_concurrency", 4),
+            ("worker_prefetch_multiplier", 1),
+            ("task_acks_late", True),
+            ("task_reject_on_worker_lost", True),
+            ("broker_pool_limit", 10),
+            ("broker_heartbeat", 120),
+            ("task_time_limit", 600),
+            ("task_soft_time_limit", 300),
+            ("worker_max_tasks_per_child", 1000),
+            ("worker_max_memory_per_child", 200_000),
+            ("timezone", "UTC"),
+            ("enable_utc", True),
+        ):
+            assert conf.get(expected_key) == expected_value, (
+                "expected allowlisted key %r=%r in conf, got %r"
+                % (expected_key, expected_value, conf.get(expected_key))
+            )
+
+        # 3. No unknown extras smuggled in (the allowlist is closed,
+        # not best-effort).
+        assert set(conf.keys()).issubset({
+            "task_serializer", "result_serializer", "accept_content",
+            "task_default_queue",
+            "worker_concurrency", "worker_prefetch_multiplier",
+            "worker_max_tasks_per_child", "worker_max_memory_per_child",
+            "task_acks_late", "task_reject_on_worker_lost",
+            "task_time_limit", "task_soft_time_limit",
+            "broker_pool_limit", "broker_heartbeat",
+            "timezone", "enable_utc",
+        }), (
+            "allowlist accepted a key it should not have: %r"
+            % (sorted(conf.keys()),)
+        )
+
+    def test_get_worker_details_handles_non_dict_conf_r7_h1(
+        self, fake_app,
+    ) -> None:
+        """If ``inspector.conf()`` returns a non-dict value for a worker
+        (older Celery, broken plugin), the redactor must return an
+        empty dict instead of leaking the raw bytes upstream."""
+        inspector = _FakeInspector(
+            conf_payload={"celery@weird": "raw-string-not-a-dict"},  # type: ignore[dict-item]
+        )
+        fake_app.control = _ControlWithInspect(inspector)
+        adapter = CeleryEngineAdapter(celery_app=fake_app)
+
+        details = adapter.get_worker_details()
+
+        assert details["celery@weird"]["conf"] == {}
+
+    def test_redact_helper_is_exported_for_brain_reuse_r7_h1(self) -> None:
+        """The brain re-applies the same filter defense-in-depth. The
+        helper + allowlist must remain module-level importable so the
+        round-7 patch set stays auditable across packages."""
+        from z4j_celery.engine import _CONF_ALLOWLIST, _redact_worker_conf
+
+        assert "broker_url" not in _CONF_ALLOWLIST
+        assert "result_backend" not in _CONF_ALLOWLIST
+        assert "broker_transport_options" not in _CONF_ALLOWLIST
+        assert "beat_schedule" not in _CONF_ALLOWLIST
+        assert "task_serializer" in _CONF_ALLOWLIST
+
+        # Helper accepts anything dict-like, returns plain dict.
+        assert _redact_worker_conf({"broker_url": "x", "timezone": "UTC"}) == {
+            "timezone": "UTC",
+        }
+        assert _redact_worker_conf(None) == {}
+        assert _redact_worker_conf("not-a-dict") == {}
+        assert _redact_worker_conf(42) == {}

@@ -54,6 +54,63 @@ logger = logging.getLogger("z4j.adapter.celery.engine")
 
 _ENGINE_NAME = "celery"
 
+# SECURITY: ``inspector.conf()`` returns the FULL Celery app.conf dict,
+# including credentialed values: ``broker_url`` (commonly contains
+# ``redis://:password@...`` / ``amqp://user:pw@...`` / SQS access keys),
+# ``result_backend`` (``db+postgresql://user:pw@...``),
+# ``broker_transport_options`` (TLS keys, IAM creds), and
+# ``beat_schedule`` (raw schedule kwargs that may embed PII or tokens).
+#
+# We allowlist (not denylist) the keys we send to the brain: operationally
+# useful tuning knobs that operators legitimately want visible in the
+# dashboard. A future Celery release adding a new credentialed key would
+# silently leak under a denylist, so allowlist is the safer posture.
+#
+# Round-7 audit finding R7-H1: the brain persists worker_metadata.conf
+# verbatim and exposes it to ProjectRole.VIEWER over
+# ``GET /api/v1/projects/{slug}/workers/{worker_id}``. Without this
+# filter at source, every viewer-role member could read broker / backend
+# credentials. The brain re-applies the same allowlist defense-in-depth
+# in ``z4j_brain.websocket.frame_router``.
+_CONF_ALLOWLIST: frozenset[str] = frozenset({
+    # Serialization
+    "task_serializer",
+    "result_serializer",
+    "accept_content",
+    # Queue routing
+    "task_default_queue",
+    # Worker concurrency / lifecycle
+    "worker_concurrency",
+    "worker_prefetch_multiplier",
+    "worker_max_tasks_per_child",
+    "worker_max_memory_per_child",
+    # Reliability semantics
+    "task_acks_late",
+    "task_reject_on_worker_lost",
+    # Time limits
+    "task_time_limit",
+    "task_soft_time_limit",
+    # Broker pooling (knobs, not creds; broker_url is excluded)
+    "broker_pool_limit",
+    "broker_heartbeat",
+    # Time zone
+    "timezone",
+    "enable_utc",
+})
+
+
+def _redact_worker_conf(cfg: Any) -> dict[str, Any]:
+    """Strip credentialed keys from a Celery worker conf dict.
+
+    Apply the source-side allowlist defined in ``_CONF_ALLOWLIST``. Any
+    key not in the allowlist is dropped, even if it looks benign. The
+    return value is always a plain ``dict`` (empty if ``cfg`` is not a
+    dict-like), so downstream JSON serialization is total.
+    """
+    if not isinstance(cfg, dict):
+        return {}
+    return {k: v for k, v in cfg.items() if k in _CONF_ALLOWLIST}
+
 
 class CeleryEngineAdapter:
     """Queue-engine adapter for Celery.
@@ -527,10 +584,13 @@ class CeleryEngineAdapter:
             for worker, names in registered.items():
                 result.setdefault(worker, {})["registered"] = names
 
-            # Configuration (may be large)
+            # Configuration (may be large AND may include credentialed
+            # keys; allowlist-filter via ``_redact_worker_conf`` before
+            # exposing to the brain. See ``_CONF_ALLOWLIST`` docstring
+            # for the round-7 audit context.)
             conf = inspector.conf() or {}
             for worker, cfg in conf.items():
-                result.setdefault(worker, {})["conf"] = cfg
+                result.setdefault(worker, {})["conf"] = _redact_worker_conf(cfg)
 
         except Exception as exc:  # noqa: BLE001
             logger.warning(
