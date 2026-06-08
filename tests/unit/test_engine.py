@@ -399,3 +399,109 @@ class TestGetWorkerDetailsR7H1:
         assert _redact_worker_conf(None) == {}
         assert _redact_worker_conf("not-a-dict") == {}
         assert _redact_worker_conf(42) == {}
+
+
+# ---------------------------------------------------------------------------
+# Round-8 audit, R8-L2: CeleryEngineAdapter worker-stats cache must be
+# instance-scoped (not class-scoped) to prevent cross-tenant bleed in
+# multi-brain test rigs and the 1.7 soak harness.
+# ---------------------------------------------------------------------------
+
+
+class TestCacheInstanceScopingR8L2:
+    """R8-L2: ``_last_worker_stats_at`` and ``_cached_worker_stats`` must
+    live on the instance, never the class.
+
+    Pre-1.6.7 these two attributes were declared at class scope
+    (``engine.py:463-464``) as mutable defaults, so two adapters
+    instantiated in the same Python process shared the same dict and
+    saw each other's last cached ``get_worker_details()`` payload.
+    In single-tenant prod that was harmless (one adapter per agent
+    process); in multi-tenant test rigs and the 1.7 soak harness it
+    would let project A's worker conf land in project B's heartbeat.
+    """
+
+    def test_cache_attrs_live_on_instance_not_class_r8_l2(self) -> None:
+        """Structural invariant: the class object itself must NOT carry
+        the cache attributes; they're created per-instance in __init__.
+
+        A future refactor that re-declares them at class scope (the
+        original bug shape) trips this guard immediately.
+        """
+        assert "_cached_worker_stats" not in CeleryEngineAdapter.__dict__, (
+            "R8-L2 regression: _cached_worker_stats reappeared at class "
+            "scope. Move it back into __init__ as `self._cached_worker_stats = {}` "
+            "so two adapter instances in the same process don't share a dict."
+        )
+        assert "_last_worker_stats_at" not in CeleryEngineAdapter.__dict__, (
+            "R8-L2 regression: _last_worker_stats_at reappeared at class "
+            "scope. Move it back into __init__."
+        )
+
+    def test_two_adapters_do_not_share_worker_stats_cache_r8_l2(
+        self, fake_app,
+    ) -> None:
+        """Behavioral invariant: populating one adapter's cache must
+        not populate the other's. Constructs two adapters, drives one
+        through ``get_health()`` so its cache fills, and asserts the
+        other's cache is still the empty-default state.
+        """
+        # Adapter A: backed by a fake_app whose control surface returns
+        # a populated worker_details payload via the existing R7-H1
+        # inspector stub. Build its own inspector so the cached dict
+        # carries a fingerprint we can detect later.
+        from tests.unit.conftest import FakeCeleryApp
+
+        app_a = FakeCeleryApp()
+        app_a.control = _ControlWithInspect(
+            _FakeInspector(
+                conf_payload={"celery@a": {"task_serializer": "json"}},
+            ),
+        )
+        adapter_a = CeleryEngineAdapter(celery_app=app_a)
+
+        # Adapter B: distinct fake_app, distinct inspector payload.
+        # We never drive get_health() on adapter_b - it must stay in
+        # the empty-default state if the cache is properly instance-
+        # scoped.
+        app_b = FakeCeleryApp()
+        app_b.control = _ControlWithInspect(
+            _FakeInspector(
+                conf_payload={"celery@b": {"task_serializer": "pickle"}},
+            ),
+        )
+        adapter_b = CeleryEngineAdapter(celery_app=app_b)
+
+        # Belt-and-braces: assert the dicts are distinct objects even
+        # before any get_health() call - if they shared a class-level
+        # default they'd be the SAME dict object.
+        assert adapter_a._cached_worker_stats is not adapter_b._cached_worker_stats
+        assert adapter_a._cached_worker_stats == {}
+        assert adapter_b._cached_worker_stats == {}
+
+        # Drive adapter A through get_health() so its cache populates.
+        # get_health() returns a dict; we don't care about the broker
+        # health half (no real broker), we care about the worker_details
+        # side effect.
+        adapter_a.get_health()
+
+        # Adapter A's cache should now hold the celery@a fingerprint.
+        assert adapter_a._cached_worker_stats, (
+            "fixture problem: adapter_a.get_health() did not populate "
+            "the cache - inspect() returned empty?"
+        )
+        assert "celery@a" in adapter_a._cached_worker_stats
+
+        # The pre-1.6.7 bug: adapter_b's cache would now also contain
+        # 'celery@a' because both adapters point at the SAME class-
+        # level dict. With the R8-L2 fix, adapter_b's cache is still
+        # the per-instance empty default.
+        assert adapter_b._cached_worker_stats == {}, (
+            "R8-L2 regression: adapter_b's worker stats cache leaked "
+            "from adapter_a. Both adapters are sharing the class-level "
+            f"mutable default. Got: {adapter_b._cached_worker_stats!r}"
+        )
+        assert adapter_b._last_worker_stats_at == 0.0, (
+            "R8-L2 regression: adapter_b's last-stats timestamp leaked "
+            "from adapter_a (class-level mutable shared)."
+        )

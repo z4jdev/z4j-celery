@@ -1,14 +1,21 @@
 # z4j-celery
 
-[![PyPI version](https://img.shields.io/pypi/v/z4j-celery.svg?v=1.6.6)](https://pypi.org/project/z4j-celery/)
-[![Python](https://img.shields.io/pypi/pyversions/z4j-celery.svg?v=1.6.6)](https://pypi.org/project/z4j-celery/)
-[![License](https://img.shields.io/pypi/l/z4j-celery.svg?v=1.6.6)](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/z4j-celery.svg?v=1.6.7)](https://pypi.org/project/z4j-celery/)
+[![Python](https://img.shields.io/pypi/pyversions/z4j-celery.svg?v=1.6.7)](https://pypi.org/project/z4j-celery/)
+[![License](https://img.shields.io/pypi/l/z4j-celery.svg?v=1.6.7)](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE)
 
 The Celery engine adapter for [z4j](https://z4j.com).
 
 Streams every task lifecycle event from your Celery workers to the z4j
 brain and accepts operator control actions from the dashboard. Pair
 with z4j-celerybeat to manage periodic / cron schedules.
+
+## Compatibility
+
+- Celery 5.2+ (no upper cap)
+- Python 3.10+
+
+Full per-adapter matrix at <https://z4j.dev/reference/compatibility/>.
 
 ## What it ships
 

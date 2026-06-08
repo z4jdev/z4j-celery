@@ -150,6 +150,16 @@ class CeleryEngineAdapter:
         self._fs_watcher: Any = None
         self._discovery_hints: DiscoveryHints | None = None
         self._registry_loop: asyncio.AbstractEventLoop | None = None
+        # Worker stats cache for get_health(). MUST be instance-scoped
+        # (R8-L2): pre-1.6.7 these lived at class scope (engine.py:463-464),
+        # which let two CeleryEngineAdapter instances in the same Python
+        # process see each other's cached worker_details payload. In single-
+        # tenant prod that was harmless; in multi-tenant tests and in the
+        # forthcoming 1.7 soak rig it lets project A's worker conf leak
+        # into project B's heartbeat. Mutable class-level defaults are
+        # never safe; the previous declaration also tripped ruff RUF012.
+        self._last_worker_stats_at: float = 0.0
+        self._cached_worker_stats: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle helpers
@@ -459,9 +469,6 @@ class CeleryEngineAdapter:
 
     async def list_workers(self) -> list[Worker]:
         return []
-
-    _last_worker_stats_at: float = 0.0
-    _cached_worker_stats: dict[str, Any] = {}
 
     def get_health(self) -> dict[str, Any]:
         """Return broker health + queue depths + worker stats for the heartbeat.
