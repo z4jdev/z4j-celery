@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from z4j_celery.meta import META_ATTR, TaskMeta, get_meta, z4j_meta
 
 

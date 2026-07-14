@@ -48,9 +48,11 @@ import logging
 import os
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from z4j_bare.safety import safe_boundary
+from z4j_core.errors import ConfigError
 
 logger = logging.getLogger("z4j.adapter.celery.worker_bootstrap")
 
@@ -63,7 +65,7 @@ _signal_connected = False
 _runtime: Any = None
 
 
-def _is_celery_worker_invocation() -> bool:
+def _is_celery_worker_invocation() -> bool:  # noqa: PLR0911  argv dispatch
     """Return True if the current process is running ``celery worker``.
 
     Celery has many sub-commands - ``inspect``, ``control``,
@@ -98,16 +100,16 @@ def _is_celery_worker_invocation() -> bool:
     argv = sys.argv or []
     if not argv:
         return False
-    prog = os.path.basename(argv[0])
+    prog = Path(argv[0]).name
 
     # Python interpreters the celery module might be loaded under:
     # CPython is ``python``/``python3``/``python3.14``; PyPy is
     # ``pypy``/``pypy3``/``pypy3.10``; uv ships its own
     # interpreter shim under various names.
-    _PYTHON_PROGS = ("python", "pypy")
+    python_progs = ("python", "pypy")
 
     def _is_python(name: str) -> bool:
-        return any(name.startswith(p) for p in _PYTHON_PROGS)
+        return any(name.startswith(p) for p in python_progs)
 
     # Direct celery entry point.
     if prog in {"celery", "celery.exe"}:
@@ -128,21 +130,30 @@ def _is_celery_worker_invocation() -> bool:
     # run celery worker``, ``hatch run celery worker``. We probe
     # the next few tokens for either ``celery`` or ``python -m
     # celery``.
-    _WRAPPERS = {
-        "uv", "uv.exe", "pipx", "pipx.exe", "poetry", "poetry.exe",
-        "hatch", "hatch.exe", "rye", "rye.exe", "pdm", "pdm.exe",
+    wrappers = {
+        "uv",
+        "uv.exe",
+        "pipx",
+        "pipx.exe",
+        "poetry",
+        "poetry.exe",
+        "hatch",
+        "hatch.exe",
+        "rye",
+        "rye.exe",
+        "pdm",
+        "pdm.exe",
     }
-    if prog in _WRAPPERS:
+    if prog in wrappers:
         # Walk past wrapper sub-commands ("run", "exec", "tool",
         # "run-script") until we hit a token we recognise.
         for i, arg in enumerate(argv[1:], start=1):
             if arg in {"celery", "celery.exe"}:
-                return _argv_has_worker_subcommand(argv[i + 1:])
-            if _is_python(os.path.basename(arg)) and (
-                len(argv) > i + 2 and argv[i + 1] == "-m"
-                and argv[i + 2] == "celery"
+                return _argv_has_worker_subcommand(argv[i + 1 :])
+            if _is_python(Path(arg).name) and (
+                len(argv) > i + 2 and argv[i + 1] == "-m" and argv[i + 2] == "celery"
             ):
-                return _argv_has_worker_subcommand(argv[i + 3:])
+                return _argv_has_worker_subcommand(argv[i + 3 :])
 
     return False
 
@@ -228,7 +239,7 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
     ``except (SystemExit, KeyboardInterrupt): raise`` carve-out
     inside ``safe_call`` still lets the operator Ctrl-C cleanly.
     """
-    global _runtime
+    global _runtime  # noqa: PLW0603  module-level singleton lazy-init
     if _runtime is not None:
         return
     if _env_flag("Z4J_DISABLED"):
@@ -244,8 +255,8 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
     try:
         from celery import current_app  # type: ignore[import-not-found]
 
-        celery_app = getattr(sender, "app", None) or current_app._get_current_object()  # noqa: SLF001
-    except Exception:  # noqa: BLE001
+        celery_app = getattr(sender, "app", None) or current_app._get_current_object()
+    except Exception:
         logger.exception("z4j worker bootstrap: cannot resolve Celery app")
         return
 
@@ -271,15 +282,34 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
         # in explicitly when the env var is truthy, and a Python
         # reviewer sees the decision in git.
         import os as _os
+
         dev_mode = _os.environ.get("Z4J_DEV_MODE", "").lower() in (
-            "1", "true", "yes", "on",
+            "1",
+            "true",
+            "yes",
+            "on",
         )
         runtime = install_agent(
             engines=[engine],
             framework=framework_cls,
             dev_mode=dev_mode,
         )
-    except Exception:  # noqa: BLE001
+    except ConfigError as exc:
+        # Missing brain_url / token / project_id / hmac_secret in the
+        # environment is the EXPECTED case for a worker whose app code
+        # calls ``install_agent`` explicitly (this auto-bootstrap only
+        # fires for the env-configured convenience path). Log it at
+        # info without a traceback so an explicit-install worker's log
+        # is not polluted with a scary-looking ConfigError stack.
+        logger.info(
+            "z4j worker bootstrap: no Z4J_* env config found, skipping "
+            "auto-start (%s). If you call install_agent() yourself this "
+            "is expected; otherwise set Z4J_BRAIN_URL / Z4J_TOKEN / "
+            "Z4J_PROJECT_ID / Z4J_HMAC_SECRET.",
+            exc,
+        )
+        return
+    except Exception:
         logger.exception(
             "z4j worker bootstrap: failed to start agent runtime - "
             "worker will continue without z4j observability",
@@ -288,8 +318,7 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
 
     _runtime = runtime
     logger.info(
-        "z4j worker bootstrap: agent runtime started "
-        "(celery_app=%s, framework=%s)",
+        "z4j worker bootstrap: agent runtime started (celery_app=%s, framework=%s)",
         getattr(celery_app, "main", None) or celery_app,
         framework_cls.__name__ if framework_cls else "bare",
     )
@@ -306,12 +335,12 @@ def _on_worker_shutdown(*_: Any, **__: Any) -> None:
     ``BaseException`` so a misbehaving adapter cannot keep the
     worker process alive past its intended exit.
     """
-    global _runtime
+    global _runtime  # noqa: PLW0603  module-level singleton lazy-init
     if _runtime is None:
         return
     try:
         _runtime.stop()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("z4j worker bootstrap: error during shutdown")
     finally:
         _runtime = None
@@ -330,7 +359,7 @@ def register_worker_bootstrap() -> None:
     environments without Celery (e.g. Django apps that don't use
     Celery yet, tests, docs builds).
     """
-    global _signal_connected
+    global _signal_connected  # noqa: PLW0603  module-level singleton lazy-init
     if _signal_connected:
         return
     # Held under a lock so concurrent imports (rare but possible in
@@ -343,7 +372,7 @@ def register_worker_bootstrap() -> None:
                 worker_init,
                 worker_shutdown,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             # Celery isn't installed. Nothing to do - this process
             # will never be a Celery worker.
             return

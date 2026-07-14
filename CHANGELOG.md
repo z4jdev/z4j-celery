@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0 (2026-07-07)
+
+* Fixed dropped-event and unknown-event-kind diagnostics that passed structlog keyword arguments to a stdlib logger.
+* Python 3.11 is now the minimum supported version (3.10 dropped).
+* Part of the coordinated 1.7.0 fleet release (unified fleet version, green lint/format/import-boundary gate).
+
 ## 1.6.7 (2026-06-07)
 
 R8 audit security batch carry-in. Fixes a multi-tenant cache bleed

@@ -70,7 +70,7 @@ class FakeConnection:
     def __init__(self, channel: FakeChannel) -> None:
         self.default_channel = channel
 
-    def __enter__(self) -> "FakeConnection":
+    def __enter__(self) -> FakeConnection:
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -88,6 +88,7 @@ class FakeTask:
     def __post_init__(self) -> None:
         def _fn() -> None:
             """Placeholder body."""
+
         _fn.__module__ = "myapp.tasks"
         self.run = _fn
 
@@ -129,7 +130,10 @@ class FakeCeleryApp:
         kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._async_results[task_id] = FakeAsyncResult(
-            task_id=task_id, name=name, args=args, kwargs=kwargs,
+            task_id=task_id,
+            name=name,
+            args=args,
+            kwargs=kwargs,
         )
 
     def send_task(

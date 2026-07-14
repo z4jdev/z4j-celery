@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from z4j_celery.actions import (
     bulk_retry_action,
     cancel_task_action,
@@ -60,7 +58,9 @@ class TestRetryAction:
     async def test_retry_rejects_eta_too_far_in_past(self, fake_app) -> None:
         fake_app.register_result("orig-past", name="myapp.tasks.do_it")
         result = await retry_task_action(
-            fake_app, task_id="orig-past", eta=1_700_000_000.0,
+            fake_app,
+            task_id="orig-past",
+            eta=1_700_000_000.0,
         )
         assert result.status == "failed"
         assert "eta" in (result.error or "")
@@ -127,6 +127,7 @@ class TestCancelAction:
     async def test_cancel_returns_failed_on_exception(self, fake_app) -> None:
         def boom(*_, **__):
             raise RuntimeError("can't")
+
         fake_app.control.revoke = boom  # type: ignore[method-assign]
         result = await cancel_task_action(fake_app, task_id="abc")
         assert result.status == "failed"
@@ -138,9 +139,11 @@ class TestPurgeAction:
         # depth-bound confirm_token. The fake broker has no
         # ``queue_declare`` hook so depth comes back as None and the
         # only way through for a happy-path test is force.
-        fake_app._channel.purge_returns = {"emails": 42}  # noqa: SLF001
+        fake_app._channel.purge_returns = {"emails": 42}
         result = await purge_queue_action(
-            fake_app, queue_name="emails", force=True,
+            fake_app,
+            queue_name="emails",
+            force=True,
         )
         assert result.status == "success"
         assert result.result is not None
@@ -148,7 +151,7 @@ class TestPurgeAction:
         assert result.result["purged"] == 42
 
     async def test_purge_without_confirm_token_is_rejected(self, fake_app) -> None:
-        fake_app._channel.purge_returns = {"emails": 42}  # noqa: SLF001
+        fake_app._channel.purge_returns = {"emails": 42}
         result = await purge_queue_action(fake_app, queue_name="emails")
         assert result.status == "failed"
         assert "confirm_token" in (result.error or "")
@@ -156,11 +159,43 @@ class TestPurgeAction:
     async def test_purge_handles_exception(self, fake_app) -> None:
         def boom(*_, **__):
             raise RuntimeError("broker down")
-        fake_app._channel.queue_purge = boom  # type: ignore[method-assign]  # noqa: SLF001
+
+        fake_app._channel.queue_purge = boom  # type: ignore[method-assign]
         result = await purge_queue_action(
-            fake_app, queue_name="emails", force=True,
+            fake_app,
+            queue_name="emails",
+            force=True,
         )
         assert result.status == "failed"
+
+
+class TestResolveAgentSecret:
+    """M-7: the purge action keys the confirm token on the agent's
+    Z4J_HMAC_SECRET, decoded the same way frame signing decodes it."""
+
+    def test_decodes_env_secret(self, monkeypatch) -> None:
+        import base64
+
+        from z4j_celery.actions.purge import _resolve_agent_secret
+
+        raw = b"k" * 32
+        monkeypatch.setenv(
+            "Z4J_HMAC_SECRET",
+            base64.urlsafe_b64encode(raw).decode("ascii"),
+        )
+        assert _resolve_agent_secret() == raw
+
+    def test_absent_secret_is_none(self, monkeypatch) -> None:
+        from z4j_celery.actions.purge import _resolve_agent_secret
+
+        monkeypatch.delenv("Z4J_HMAC_SECRET", raising=False)
+        assert _resolve_agent_secret() is None
+
+    def test_undecodable_secret_is_none(self, monkeypatch) -> None:
+        from z4j_celery.actions.purge import _resolve_agent_secret
+
+        monkeypatch.setenv("Z4J_HMAC_SECRET", "not!valid!base64!")
+        assert _resolve_agent_secret() is None
 
 
 class TestDeadLetterAction:
@@ -183,6 +218,7 @@ class TestRestartWorkerAction:
     async def test_restart_failure(self, fake_app) -> None:
         def boom(*_, **__):
             raise RuntimeError("network")
+
         fake_app.control.broadcast = boom  # type: ignore[method-assign]
         result = await restart_worker_action(fake_app, worker_name="celery@w1")
         assert result.status == "failed"

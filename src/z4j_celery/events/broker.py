@@ -26,10 +26,12 @@ enqueued onto the engine's async queue via ``call_soon_threadsafe``.
 from __future__ import annotations
 
 import ast
+import contextlib
 import logging
 import threading
 from collections import OrderedDict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from z4j_bare.safety import safe_boundary
 from z4j_core.models import Event
@@ -43,7 +45,6 @@ from z4j_celery.events.mapper import (
     build_task_started_event,
     build_task_succeeded_event,
 )
-
 
 logger = logging.getLogger("z4j.adapter.celery.broker_events")
 
@@ -65,7 +66,7 @@ class CeleryBrokerEventsMonitor:
         celery_app: Any,
         sink: EventSink,
         redaction: RedactionEngine,
-        hostname_filter: "Callable[[str], bool] | None" = None,
+        hostname_filter: Callable[[str], bool] | None = None,
     ) -> None:
         self._app = celery_app
         self._sink = sink
@@ -124,7 +125,7 @@ class CeleryBrokerEventsMonitor:
         self._app.conf.task_send_sent_event = True
         try:
             self._app.control.enable_events()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("z4j broker events: enable_events broadcast failed (non-fatal)")
 
         self._stop.clear()
@@ -237,18 +238,14 @@ class CeleryBrokerEventsMonitor:
                     "message; dropping and continuing",
                 )
                 self._poison_drop_count += 1
-                try:
+                with contextlib.suppress(Exception):
                     message.ack()
-                except Exception:  # noqa: BLE001
-                    pass
                 return
-            try:
+            # Ack failure (broker disconnect mid-handler) is tolerated:
+            # the broker will re-deliver on reconnect; the brain's
+            # event_id dedup absorbs the duplicate.
+            with contextlib.suppress(Exception):
                 message.ack()
-            except Exception:  # noqa: BLE001
-                # Ack failed (broker disconnect mid-handler).
-                # The broker will re-deliver on reconnect; the
-                # brain's event_id dedup absorbs the duplicate.
-                pass
 
         while not self._stop.is_set():
             try:
@@ -284,7 +281,7 @@ class CeleryBrokerEventsMonitor:
                                 # Connection broke - exit inner loop
                                 # so the outer ``while`` rebuilds it.
                                 break
-            except Exception:  # noqa: BLE001
+            except Exception:
                 if self._stop.is_set():
                     return
                 logger.exception(
@@ -362,9 +359,7 @@ class CeleryBrokerEventsMonitor:
     def _on_succeeded(self, event: dict[str, Any]) -> None:
         task_id = event.get("uuid", "")
         runtime_raw = event.get("runtime")
-        runtime_ms = (
-            int(float(runtime_raw) * 1000) if runtime_raw is not None else None
-        )
+        runtime_ms = int(float(runtime_raw) * 1000) if runtime_raw is not None else None
         ev = build_task_succeeded_event(
             redaction=self._redaction,
             task_id=task_id,
@@ -457,7 +452,8 @@ def _coerce_args(value: Any) -> list[Any] | None:
             return list(parsed)
         return None
     logger.warning(
-        "z4j broker: dropping unexpected args type %s", type(value).__name__,
+        "z4j broker: dropping unexpected args type %s",
+        type(value).__name__,
     )
     return None
 
@@ -486,7 +482,8 @@ def _coerce_kwargs(value: Any) -> dict[str, Any] | None:
             return parsed
         return None
     logger.warning(
-        "z4j broker: dropping unexpected kwargs type %s", type(value).__name__,
+        "z4j broker: dropping unexpected kwargs type %s",
+        type(value).__name__,
     )
     return None
 

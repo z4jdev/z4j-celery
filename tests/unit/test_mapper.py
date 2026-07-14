@@ -5,10 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
-from z4j_core.models import EventKind
-from z4j_core.redaction.engine import RedactionEngine
-
 from z4j_celery.events.mapper import (
     build_task_failed_event,
     build_task_received_event,
@@ -18,6 +14,8 @@ from z4j_celery.events.mapper import (
     build_task_succeeded_event,
 )
 from z4j_celery.meta import z4j_meta
+from z4j_core.models import EventKind
+from z4j_core.redaction.engine import RedactionEngine
 
 
 @pytest.fixture
@@ -118,7 +116,8 @@ class TestBasicBuilders:
 
 class TestRedaction:
     def test_kwargs_with_sensitive_keys_are_redacted(
-        self, redaction: RedactionEngine,
+        self,
+        redaction: RedactionEngine,
     ) -> None:
         task = _fake_task("myapp.tasks.login")
         event = build_task_started_event(
@@ -132,7 +131,8 @@ class TestRedaction:
         assert kwargs["password"] == "[REDACTED]"
 
     def test_meta_redact_kwargs_forces_redaction(
-        self, redaction: RedactionEngine,
+        self,
+        redaction: RedactionEngine,
     ) -> None:
         task = _fake_task(
             "myapp.tasks.charge",
@@ -148,7 +148,8 @@ class TestRedaction:
         assert event.data["kwargs"]["user_id"] == 1
 
     def test_meta_keep_kwargs_is_whitelist(
-        self, redaction: RedactionEngine,
+        self,
+        redaction: RedactionEngine,
     ) -> None:
         task = _fake_task(
             "myapp.tasks.charge",
@@ -164,7 +165,8 @@ class TestRedaction:
         assert kwargs == {"user_id": 1}
 
     def test_meta_keep_kwargs_redacts_positional_args(
-        self, redaction: RedactionEngine,
+        self,
+        redaction: RedactionEngine,
     ) -> None:
         task = _fake_task(
             "myapp.tasks.charge",
@@ -200,19 +202,24 @@ class TestMetaPropagation:
             meta_decorator=z4j_meta(tags=["billing", "critical"]),
         )
         event = build_task_started_event(
-            redaction=redaction, task_id="abc", task=task,
+            redaction=redaction,
+            task_id="abc",
+            task=task,
         )
         assert event.data["tags"] == ["billing", "critical"]
 
     def test_expected_duration_and_deadline(
-        self, redaction: RedactionEngine,
+        self,
+        redaction: RedactionEngine,
     ) -> None:
         task = _fake_task(
             "myapp.tasks.charge",
             meta_decorator=z4j_meta(expected_duration_ms=200, deadline_ms=5000),
         )
         event = build_task_started_event(
-            redaction=redaction, task_id="abc", task=task,
+            redaction=redaction,
+            task_id="abc",
+            task=task,
         )
         assert event.data["expected_duration_ms"] == 200
         assert event.data["deadline_ms"] == 5000

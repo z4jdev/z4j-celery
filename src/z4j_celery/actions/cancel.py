@@ -40,7 +40,7 @@ async def cancel_task_action(
     """
     try:
         celery_app.control.revoke(task_id, terminate=terminate, signal=signal)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return CommandResult(
             status="failed",
             error=f"celery_app.control.revoke failed: {exc}",

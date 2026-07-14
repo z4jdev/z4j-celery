@@ -26,10 +26,9 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from z4j_bare.safety import safe_boundary
 from z4j_core.models import Event
 from z4j_core.redaction.engine import RedactionEngine
-
-from z4j_bare.safety import safe_boundary
 
 from z4j_celery.events.mapper import (
     build_task_failed_event,
@@ -112,7 +111,7 @@ class CelerySignalHooks:
         for signal, handler in self._handlers:
             try:
                 signal.disconnect(handler)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("error disconnecting celery signal handler")
         self._handlers.clear()
         self._connected = False
@@ -133,7 +132,7 @@ class CelerySignalHooks:
     @safe_boundary
     def _on_received(
         self,
-        sender: Any = None,  # noqa: ARG002
+        sender: Any = None,
         request: Any = None,
         **_: Any,
     ) -> None:
@@ -143,9 +142,14 @@ class CelerySignalHooks:
         task = _get(request, "task", None)
         args = _get(request, "args", None)
         kwargs = _get(request, "kwargs", None)
-        queue = _get(request, "delivery_info", {}).get("routing_key") if isinstance(
-            _get(request, "delivery_info", {}), dict,
-        ) else None
+        queue = (
+            _get(request, "delivery_info", {}).get("routing_key")
+            if isinstance(
+                _get(request, "delivery_info", {}),
+                dict,
+            )
+            else None
+        )
         # Celery's request carries the canvas-graph linkage on
         # every spawned task: ``parent_id`` is the task that
         # called ``apply_async`` for me; ``root_id`` is the
@@ -193,7 +197,7 @@ class CelerySignalHooks:
         task: Any = None,
         retval: Any = None,
         state: str | None = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> None:
         """Handle ``task_postrun``.
 
@@ -224,7 +228,7 @@ class CelerySignalHooks:
         exception: BaseException | None = None,
         traceback: Any = None,
         einfo: Any = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> None:
         if exception is None:
             return
@@ -246,10 +250,10 @@ class CelerySignalHooks:
     def _on_retry(
         self,
         sender: Any = None,
-        request: Any = None,  # noqa: ARG002
+        request: Any = None,
         reason: str | None = None,
         einfo: Any = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> None:
         task_id = kwargs.get("task_id") or ""
         event = build_task_retried_event(

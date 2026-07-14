@@ -16,10 +16,10 @@ Example::
     from celery import shared_task
     from z4j_celery import z4j_meta
 
+
     @shared_task(bind=True)
     @z4j_meta(redact_kwargs=["email"], tags=["billing"], deadline_ms=5000)
-    def charge(self, user_id, email, amount):
-        ...
+    def charge(self, user_id, email, amount): ...
 
 See ``docs/ADAPTER.md §3.7`` for the full user-facing documentation.
 """

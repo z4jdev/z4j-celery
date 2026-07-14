@@ -96,7 +96,7 @@ async def rate_limit_action(
             status="failed",
             error=f"rate_limit broadcast timed out after {_BROADCAST_TIMEOUT}s",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return CommandResult(
             status="failed",
             error=f"rate_limit broadcast failed: {type(exc).__name__}",

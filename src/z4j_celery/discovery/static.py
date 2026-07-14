@@ -65,7 +65,7 @@ def discover_static(app_paths: Iterable[Path]) -> list[TaskDefinition]:
         for file_path in _candidate_files(root):
             try:
                 definitions = _scan_file(file_path)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("static scan failed for %s", file_path)
                 continue
             result.extend(definitions)
@@ -225,7 +225,7 @@ def _render_arg(arg: ast.arg) -> str:
         return arg.arg
     try:
         annotation = ast.unparse(arg.annotation)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return arg.arg
     return f"{arg.arg}: {annotation}"
 

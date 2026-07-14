@@ -1,8 +1,8 @@
 # z4j-celery
 
-[![PyPI version](https://img.shields.io/pypi/v/z4j-celery.svg?v=1.6.7)](https://pypi.org/project/z4j-celery/)
-[![Python](https://img.shields.io/pypi/pyversions/z4j-celery.svg?v=1.6.7)](https://pypi.org/project/z4j-celery/)
-[![License](https://img.shields.io/pypi/l/z4j-celery.svg?v=1.6.7)](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/z4j-celery.svg?v=1.7.0)](https://pypi.org/project/z4j-celery/)
+[![Python](https://img.shields.io/pypi/pyversions/z4j-celery.svg?v=1.7.0)](https://pypi.org/project/z4j-celery/)
+[![License](https://img.shields.io/pypi/l/z4j-celery.svg?v=1.7.0)](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE)
 
 The Celery engine adapter for [z4j](https://z4j.com).
 
@@ -13,7 +13,7 @@ with z4j-celerybeat to manage periodic / cron schedules.
 ## Compatibility
 
 - Celery 5.2+ (no upper cap)
-- Python 3.10+
+- Python 3.11+
 
 Full per-adapter matrix at <https://z4j.dev/reference/compatibility/>.
 

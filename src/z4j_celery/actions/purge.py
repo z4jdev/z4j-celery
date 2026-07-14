@@ -5,25 +5,51 @@ dialog before issuing this. Uses ``celery_app.control.purge()``
 for the default queue, or ``discard_all`` on a channel for a
 specific named queue.
 
-Audit H13: this action now requires an explicit
-``confirm_token`` derived from ``HMAC(queue_name + queue_depth)``.
-The brain computes it after fetching depth + showing the operator
-a preview; the agent recomputes locally and refuses to act if
-the token is wrong. Closes the "compromised brain or replayed
-command silently nukes a queue with N pending messages" gap.
+Audit H13 / M-7: this action requires an explicit ``confirm_token``,
+a keyed ``HMAC(project_secret, "purge|queue|depth")`` (see
+``z4j_core.purge_token``). The brain computes it server-side after
+fetching depth + showing the operator a preview; the agent recomputes
+locally against its own per-project secret and refuses to act if the
+token is wrong. Keying (M-7) means a party that can only observe the
+depth cannot forge or refresh a token. A pre-1.7 UNKEYED token is still
+accepted during a grace window (with a warning) for rolling upgrades.
+Closes the "compromised brain or replayed command silently nukes a
+queue with N pending messages" gap.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import os
 from typing import Any
 
 from z4j_core.models import CommandResult
+from z4j_core.purge_token import (
+    accept_legacy_from_env,
+    compute_purge_confirm_token,
+    legacy_purge_confirm_token,
+    verify_purge_confirm_token,
+)
+from z4j_core.transport.hmac import decode_agent_hmac_secret
 
 logger = logging.getLogger("z4j.adapter.celery.actions.purge")
+
+
+def _resolve_agent_secret() -> bytes | None:
+    """Best-effort raw per-project secret for keying the confirm token.
+
+    Reads ``Z4J_HMAC_SECRET`` (the value the brain returns on agent mint)
+    from the environment and decodes it to the same raw bytes frame
+    signing uses. Returns None when it is absent or undecodable, in which
+    case only the legacy unkeyed token can be verified (grace window).
+    """
+    raw = os.environ.get("Z4J_HMAC_SECRET")
+    if not raw:
+        return None
+    try:
+        return decode_agent_hmac_secret(raw)
+    except ValueError:
+        return None
 
 
 #: Soft refusal threshold. Above this depth the agent refuses to
@@ -43,20 +69,36 @@ def _purge_threshold() -> int:
         return _DEFAULT_PURGE_THRESHOLD
 
 
-def expected_confirm_token(*, queue_name: str, queue_depth: int) -> str:
-    """Derive the ``confirm_token`` the brain must include in its
-    purge command. Both sides use this exact function so the agent
-    refuses anything but a freshly-computed token.
+def expected_confirm_token(
+    *,
+    queue_name: str,
+    queue_depth: int,
+    secret: bytes | str | None = None,
+) -> str:
+    """Derive the ``confirm_token`` for a purge of ``queue_name`` at
+    ``queue_depth``.
 
-    The token is short-lived in practice because ``queue_depth``
-    changes constantly under load, so a captured-and-replayed
-    command becomes wrong almost immediately.
+    Prefer :func:`z4j_core.purge_token.compute_purge_confirm_token`
+    directly. This shim keys with the per-project ``secret`` when given
+    (the real, keyed HMAC); with no secret it returns the pre-1.7
+    UNKEYED token, kept only so existing callers/tests keep working
+    during the grace window.
+
+    The token is short-lived in practice because ``queue_depth`` changes
+    constantly under load, so a captured-and-replayed command becomes
+    wrong almost immediately -- and, keyed, it cannot be recomputed for
+    the new depth by anyone lacking the project secret.
     """
-    payload = f"purge|{queue_name}|{queue_depth}".encode()
-    # Local-secret HMAC; doesn't need cross-process portability
-    # because the brain just produces the EXACT same string against
-    # the EXACT same depth it observed when issuing the command.
-    return hashlib.sha256(payload).hexdigest()
+    if secret:
+        return compute_purge_confirm_token(
+            secret=secret,
+            queue_name=queue_name,
+            queue_depth=queue_depth,
+        )
+    return legacy_purge_confirm_token(
+        queue_name=queue_name,
+        queue_depth=queue_depth,
+    )
 
 
 def _measure_depth(celery_app: Any, queue_name: str) -> int | None:
@@ -73,12 +115,12 @@ def _measure_depth(celery_app: Any, queue_name: str) -> int | None:
             llen = getattr(channel, "client", None)
             if llen is not None and hasattr(llen, "llen"):
                 return int(llen.llen(queue_name))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     return None
 
 
-async def purge_queue_action(
+async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
     celery_app: Any,
     *,
     queue_name: str,
@@ -107,7 +149,8 @@ async def purge_queue_action(
         logger.critical(
             "z4j purge_queue: force=True override on queue %r "
             "(depth=%s) - confirm_token check bypassed",
-            queue_name, depth,
+            queue_name,
+            depth,
         )
     else:
         if confirm_token is None:
@@ -138,10 +181,14 @@ async def purge_queue_action(
                     f"Z4J_PURGE_THRESHOLD or use force=True."
                 ),
             )
-        expected = expected_confirm_token(
-            queue_name=queue_name, queue_depth=depth,
+        accepted, used_legacy = verify_purge_confirm_token(
+            provided=confirm_token,
+            queue_name=queue_name,
+            queue_depth=depth,
+            secret=_resolve_agent_secret(),
+            accept_legacy=accept_legacy_from_env(),
         )
-        if not hmac.compare_digest(expected, confirm_token):
+        if not accepted:
             return CommandResult(
                 status="failed",
                 error=(
@@ -150,6 +197,14 @@ async def purge_queue_action(
                     "agent execution, or the command is replayed. "
                     "Re-issue the command."
                 ),
+            )
+        if used_legacy:
+            logger.warning(
+                "z4j purge_queue: accepted a LEGACY unkeyed confirm_token "
+                "for queue %r -- the issuer is pre-1.7. Upgrade the brain "
+                "so it sends a keyed HMAC token; legacy acceptance is "
+                "removed in a future release.",
+                queue_name,
             )
 
     try:
@@ -172,7 +227,7 @@ async def purge_queue_action(
                         "queue_delete (would destroy bindings)"
                     ),
                 )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return CommandResult(
             status="failed",
             error=f"purge_queue failed: {type(exc).__name__}",

@@ -8,15 +8,11 @@ next turn alongside the brain backend.
 
 from __future__ import annotations
 
-import inspect
-
 import pytest
-
-from z4j_core.models import DiscoveryHints
-from z4j_core.protocols import QueueEngineAdapter
-
 from z4j_celery.capabilities import DEFAULT_CAPABILITIES
 from z4j_celery.engine import CeleryEngineAdapter, _method_is_async
+from z4j_core.models import DiscoveryHints
+from z4j_core.protocols import QueueEngineAdapter
 
 
 @pytest.fixture
@@ -51,7 +47,9 @@ class TestProtocolConformance:
         ],
     )
     def test_async_methods(
-        self, adapter: CeleryEngineAdapter, method: str,
+        self,
+        adapter: CeleryEngineAdapter,
+        method: str,
     ) -> None:
         assert _method_is_async(adapter, method)
 
@@ -62,7 +60,8 @@ class TestCapabilities:
         assert caps == set(DEFAULT_CAPABILITIES)
 
     def test_includes_all_expected_actions(
-        self, adapter: CeleryEngineAdapter,
+        self,
+        adapter: CeleryEngineAdapter,
     ) -> None:
         caps = adapter.capabilities()
         assert "retry_task" in caps
@@ -75,9 +74,12 @@ class TestCapabilities:
 
 class TestDiscovery:
     async def test_discover_tasks_returns_runtime_tasks(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         from tests.unit.conftest import FakeTask  # type: ignore[import-untyped]
+
         fake_app.register_task(FakeTask(name="myapp.tasks.send_email"))
         fake_app.register_task(FakeTask(name="myapp.tasks.ship", queue="shipping"))
 
@@ -87,7 +89,10 @@ class TestDiscovery:
         assert "myapp.tasks.ship" in names
 
     async def test_discover_merges_static_hints(
-        self, adapter: CeleryEngineAdapter, fake_app, tmp_path,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
+        tmp_path,
     ) -> None:
         from tests.unit.conftest import FakeTask  # type: ignore[import-untyped]
 
@@ -117,21 +122,27 @@ def static_only():
 
 class TestActions:
     async def test_retry_task(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         fake_app.register_result("orig", name="myapp.tasks.foo")
         result = await adapter.retry_task("orig")
         assert result.status == "success"
 
     async def test_cancel_task(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         result = await adapter.cancel_task("abc")
         assert result.status == "success"
         assert fake_app.control.revoked[0][0] == "abc"
 
     async def test_bulk_retry_extracts_task_ids_from_filter(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         fake_app.register_result("a", name="t.a")
         fake_app.register_result("b", name="t.b")
@@ -144,7 +155,9 @@ class TestActions:
         assert result.result["succeeded"] == 2
 
     async def test_purge_queue(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         # Audit H13: purge_queue now requires either a valid
         # ``confirm_token`` (HMAC of queue_name + current depth) or
@@ -154,14 +167,18 @@ class TestActions:
         assert result.status == "success"
 
     async def test_requeue_dead_letter(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         fake_app.register_result("dead", name="t.failing")
         result = await adapter.requeue_dead_letter("dead")
         assert result.status == "success"
 
     async def test_restart_worker(
-        self, adapter: CeleryEngineAdapter, fake_app,
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
     ) -> None:
         result = await adapter.restart_worker("celery@w1")
         assert result.status == "success"
@@ -170,12 +187,13 @@ class TestActions:
 class TestEventQueue:
     async def test_event_queue_starts_empty(self, adapter: CeleryEngineAdapter) -> None:
         # We don't connect signals here, just assert the queue exists.
-        assert adapter._event_queue.qsize() == 0  # noqa: SLF001
+        assert adapter._event_queue.qsize() == 0
 
     async def test_enqueue_via_helper(self, adapter: CeleryEngineAdapter) -> None:
-        from z4j_core.models import Event, EventKind
-        from uuid import uuid4
         from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from z4j_core.models import Event, EventKind
 
         event = Event(
             id=uuid4(),
@@ -187,8 +205,8 @@ class TestEventQueue:
             occurred_at=datetime.now(UTC),
             data={},
         )
-        adapter._enqueue_event(event)  # noqa: SLF001
-        assert adapter._event_queue.qsize() == 1  # noqa: SLF001
+        adapter._enqueue_event(event)
+        assert adapter._event_queue.qsize() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +252,8 @@ class _ControlWithInspect:
     def inspect(
         self,
         *,
-        destination: list[str] | None = None,  # noqa: ARG002
-        timeout: float | None = None,  # noqa: ARG002
+        destination: list[str] | None = None,
+        timeout: float | None = None,
     ) -> _FakeInspector:
         return self._inspector
 
@@ -253,7 +271,8 @@ class TestGetWorkerDetailsR7H1:
     """
 
     def test_get_worker_details_strips_credentialed_conf_keys_r7_h1(
-        self, fake_app,
+        self,
+        fake_app,
     ) -> None:
         # Fabricate a worker conf that mixes the dangerous keys an
         # operator may have set in their Celery app (broker / backend
@@ -304,7 +323,7 @@ class TestGetWorkerDetailsR7H1:
 
         assert "celery@worker-1" in details, (
             "expected the inspector's conf payload to land under the "
-            "worker hostname key; got %r" % (details,)
+            f"worker hostname key; got {details!r}"
         )
         conf = details["celery@worker-1"]["conf"]
         assert isinstance(conf, dict)
@@ -317,9 +336,9 @@ class TestGetWorkerDetailsR7H1:
             "beat_schedule",
         ):
             assert forbidden not in conf, (
-                "R7-H1: %r leaked through the allowlist; the brain "
+                f"R7-H1: {forbidden!r} leaked through the allowlist; the brain "
                 "would persist it into workers.metadata.conf and "
-                "expose it to ProjectRole.VIEWER" % (forbidden,)
+                "expose it to ProjectRole.VIEWER"
             )
 
         # 2. ALL benign tuning knobs MUST survive (the dashboard relies
@@ -344,28 +363,36 @@ class TestGetWorkerDetailsR7H1:
             ("enable_utc", True),
         ):
             assert conf.get(expected_key) == expected_value, (
-                "expected allowlisted key %r=%r in conf, got %r"
-                % (expected_key, expected_value, conf.get(expected_key))
+                f"expected allowlisted key {expected_key!r}={expected_value!r} "
+                f"in conf, got {conf.get(expected_key)!r}"
             )
 
         # 3. No unknown extras smuggled in (the allowlist is closed,
         # not best-effort).
-        assert set(conf.keys()).issubset({
-            "task_serializer", "result_serializer", "accept_content",
-            "task_default_queue",
-            "worker_concurrency", "worker_prefetch_multiplier",
-            "worker_max_tasks_per_child", "worker_max_memory_per_child",
-            "task_acks_late", "task_reject_on_worker_lost",
-            "task_time_limit", "task_soft_time_limit",
-            "broker_pool_limit", "broker_heartbeat",
-            "timezone", "enable_utc",
-        }), (
-            "allowlist accepted a key it should not have: %r"
-            % (sorted(conf.keys()),)
-        )
+        assert set(conf.keys()).issubset(
+            {
+                "task_serializer",
+                "result_serializer",
+                "accept_content",
+                "task_default_queue",
+                "worker_concurrency",
+                "worker_prefetch_multiplier",
+                "worker_max_tasks_per_child",
+                "worker_max_memory_per_child",
+                "task_acks_late",
+                "task_reject_on_worker_lost",
+                "task_time_limit",
+                "task_soft_time_limit",
+                "broker_pool_limit",
+                "broker_heartbeat",
+                "timezone",
+                "enable_utc",
+            }
+        ), f"allowlist accepted a key it should not have: {sorted(conf.keys())!r}"
 
     def test_get_worker_details_handles_non_dict_conf_r7_h1(
-        self, fake_app,
+        self,
+        fake_app,
     ) -> None:
         """If ``inspector.conf()`` returns a non-dict value for a worker
         (older Celery, broken plugin), the redactor must return an
@@ -439,7 +466,8 @@ class TestCacheInstanceScopingR8L2:
         )
 
     def test_two_adapters_do_not_share_worker_stats_cache_r8_l2(
-        self, fake_app,
+        self,
+        fake_app,
     ) -> None:
         """Behavioral invariant: populating one adapter's cache must
         not populate the other's. Constructs two adapters, drives one

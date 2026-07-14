@@ -44,7 +44,7 @@ def discover_runtime(celery_app: Any) -> list[TaskDefinition]:
 
     try:
         items = list(tasks_attr.items())  # type: ignore[union-attr]
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("failed to iterate celery_app.tasks")
         return result
 
@@ -54,7 +54,7 @@ def discover_runtime(celery_app: Any) -> list[TaskDefinition]:
             continue
         try:
             definition = _definition_for(name, task_obj)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("failed to build TaskDefinition for %s", name)
             continue
         result.append(definition)

@@ -26,7 +26,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from z4j_bare.buffer import BufferStore
 from z4j_bare.dispatcher import CommandDispatcher
 from z4j_celery.engine import CeleryEngineAdapter
@@ -40,7 +39,7 @@ def buf(tmp_path: Path) -> BufferStore:
     store.close()
 
 
-def _patch_send_task_with_queue(fake_app) -> None:  # noqa: ANN001
+def _patch_send_task_with_queue(fake_app) -> None:
     """Extend FakeCeleryApp.send_task to accept queue + priority.
 
     The real celery ``send_task`` accepts ``queue=`` and ``priority=``
@@ -49,11 +48,10 @@ def _patch_send_task_with_queue(fake_app) -> None:  # noqa: ANN001
     method locally so this test's dispatcher payload (which carries
     the brain's ``queue`` field through to the adapter) lands cleanly.
     """
-    import contextlib
 
     original = fake_app.send_task
 
-    def wrapped(name, *, args=(), kwargs=None, eta=None, queue=None, priority=None):  # noqa: ANN001
+    def wrapped(name, *, args=(), kwargs=None, eta=None, queue=None, priority=None):
         # Record the queue/priority alongside the original call shape.
         result = original(name, args=args, kwargs=kwargs, eta=eta)
         if fake_app.sent_tasks:
@@ -66,7 +64,8 @@ def _patch_send_task_with_queue(fake_app) -> None:  # noqa: ANN001
 
 @pytest.mark.asyncio
 async def test_schedule_fire_end_to_end_through_dispatcher(
-    fake_app, buf: BufferStore,
+    fake_app,
+    buf: BufferStore,
 ) -> None:
     """A schedule.fire CommandFrame for the celery engine must:
 
@@ -88,9 +87,9 @@ async def test_schedule_fire_end_to_end_through_dispatcher(
     dispatcher = CommandDispatcher(
         engines={"celery": engine},
         schedulers={},  # no scheduler adapter, proves the v1.1.0
-                        # bare-dispatcher schedule.fire fix works
-                        # without one (a celery WORKER agent has no
-                        # celery-beat adapter registered).
+        # bare-dispatcher schedule.fire fix works
+        # without one (a celery WORKER agent has no
+        # celery-beat adapter registered).
         buffer=buf,
     )
 
@@ -130,9 +129,7 @@ async def test_schedule_fire_end_to_end_through_dispatcher(
     # The dispatcher emitted a success command_result frame.
     entries = buf.drain(10)
     results = [e for e in entries if e.kind == "command_result"]
-    assert len(results) == 1, (
-        "exactly one success command_result frame must be buffered"
-    )
+    assert len(results) == 1, "exactly one success command_result frame must be buffered"
     parsed = json.loads(results[0].payload.decode("utf-8"))
     assert parsed["payload"]["status"] == "success"
     assert parsed["payload"]["result"]["engine"] == "celery"
@@ -140,7 +137,8 @@ async def test_schedule_fire_end_to_end_through_dispatcher(
 
 @pytest.mark.asyncio
 async def test_schedule_fire_celery_routes_via_engine_field(
-    fake_app, buf: BufferStore,
+    fake_app,
+    buf: BufferStore,
 ) -> None:
     """When the dispatcher has multiple engines registered, the
     ``engine`` field in the ``schedule.fire`` payload selects which
@@ -158,7 +156,9 @@ async def test_schedule_fire_celery_routes_via_engine_field(
         def capabilities(self) -> tuple[str, ...]:
             return self.capabilities_value
 
-        async def submit_task(self, name, *, args=(), kwargs=None, queue=None, eta=None, priority=None):  # noqa: ANN001
+        async def submit_task(
+            self, name, *, args=(), kwargs=None, queue=None, eta=None, priority=None
+        ):
             type(self).last_call = {"name": name, "args": args, "kwargs": kwargs}
             return CommandResult(status="success", result={"engine": "rq"})
 

@@ -4,16 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from z4j_core.models import TaskDefinition
-
 from z4j_celery.discovery import (
     discover_runtime,
     discover_static,
     merge_discoveries,
 )
-from z4j_celery.meta import z4j_meta
+from z4j_core.models import TaskDefinition
 
 
 class TestRuntimeDiscovery:
@@ -23,6 +19,7 @@ class TestRuntimeDiscovery:
 
     def test_single_task(self, fake_app) -> None:
         from tests.unit.conftest import FakeTask  # type: ignore[import-untyped]
+
         fake_app.register_task(FakeTask(name="myapp.tasks.send_email"))
         defs = discover_runtime(fake_app)
         assert len(defs) == 1
@@ -32,6 +29,7 @@ class TestRuntimeDiscovery:
 
     def test_internal_celery_tasks_excluded(self, fake_app) -> None:
         from tests.unit.conftest import FakeTask  # type: ignore[import-untyped]
+
         fake_app.register_task(FakeTask(name="celery.backend_cleanup"))
         fake_app.register_task(FakeTask(name="myapp.tasks.send_email"))
         defs = discover_runtime(fake_app)
@@ -40,6 +38,7 @@ class TestRuntimeDiscovery:
 
     def test_task_with_queue(self, fake_app) -> None:
         from tests.unit.conftest import FakeTask  # type: ignore[import-untyped]
+
         fake_app.register_task(FakeTask(name="myapp.tasks.ship", queue="shipping"))
         defs = discover_runtime(fake_app)
         assert defs[0].queue == "shipping"
@@ -47,6 +46,7 @@ class TestRuntimeDiscovery:
     def test_bad_app_returns_empty(self) -> None:
         class NoTasks:
             pass
+
         assert discover_runtime(NoTasks()) == []
 
 

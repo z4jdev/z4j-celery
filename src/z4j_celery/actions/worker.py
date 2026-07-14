@@ -69,7 +69,7 @@ async def restart_worker_action(
             status="failed",
             error=f"worker restart broadcast timed out after {_BROADCAST_TIMEOUT}s",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return CommandResult(
             status="failed",
             error=f"worker restart broadcast failed: {type(exc).__name__}",

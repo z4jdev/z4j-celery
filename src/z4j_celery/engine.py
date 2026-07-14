@@ -72,31 +72,33 @@ _ENGINE_NAME = "celery"
 # filter at source, every viewer-role member could read broker / backend
 # credentials. The brain re-applies the same allowlist defense-in-depth
 # in ``z4j_brain.websocket.frame_router``.
-_CONF_ALLOWLIST: frozenset[str] = frozenset({
-    # Serialization
-    "task_serializer",
-    "result_serializer",
-    "accept_content",
-    # Queue routing
-    "task_default_queue",
-    # Worker concurrency / lifecycle
-    "worker_concurrency",
-    "worker_prefetch_multiplier",
-    "worker_max_tasks_per_child",
-    "worker_max_memory_per_child",
-    # Reliability semantics
-    "task_acks_late",
-    "task_reject_on_worker_lost",
-    # Time limits
-    "task_time_limit",
-    "task_soft_time_limit",
-    # Broker pooling (knobs, not creds; broker_url is excluded)
-    "broker_pool_limit",
-    "broker_heartbeat",
-    # Time zone
-    "timezone",
-    "enable_utc",
-})
+_CONF_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Serialization
+        "task_serializer",
+        "result_serializer",
+        "accept_content",
+        # Queue routing
+        "task_default_queue",
+        # Worker concurrency / lifecycle
+        "worker_concurrency",
+        "worker_prefetch_multiplier",
+        "worker_max_tasks_per_child",
+        "worker_max_memory_per_child",
+        # Reliability semantics
+        "task_acks_late",
+        "task_reject_on_worker_lost",
+        # Time limits
+        "task_time_limit",
+        "task_soft_time_limit",
+        # Broker pooling (knobs, not creds; broker_url is excluded)
+        "broker_pool_limit",
+        "broker_heartbeat",
+        # Time zone
+        "timezone",
+        "enable_utc",
+    }
+)
 
 
 def _redact_worker_conf(cfg: Any) -> dict[str, Any]:
@@ -144,9 +146,7 @@ class CeleryEngineAdapter:
         # filesystem watcher (``Z4J_DEV_MODE=true`` +
         # ``z4j-bare[watcher]`` installed). ``subscribe_registry_changes``
         # consumes it; in production this stays empty forever.
-        self._registry_delta_queue: asyncio.Queue[TaskRegistryDelta] = (
-            asyncio.Queue(maxsize=100)
-        )
+        self._registry_delta_queue: asyncio.Queue[TaskRegistryDelta] = asyncio.Queue(maxsize=100)
         self._fs_watcher: Any = None
         self._discovery_hints: DiscoveryHints | None = None
         self._registry_loop: asyncio.AbstractEventLoop | None = None
@@ -254,7 +254,7 @@ class CeleryEngineAdapter:
             os.environ.get("Z4J_CELERY_LOCAL_HOSTNAME", "").strip()
             or os.environ.get("CELERY_HOSTNAME", "").strip()
         )
-        hostname_filter: "Callable[[str], bool] | None" = None
+        hostname_filter: Callable[[str], bool] | None = None
         if local_hostname:
             _local = local_hostname
 
@@ -306,7 +306,7 @@ class CeleryEngineAdapter:
             if "solo" in pool_str:
                 return "solo"
             return pool_str
-        except Exception:  # noqa: BLE001
+        except Exception:
             return "prefork"
 
     def _enqueue_event(self, event: Event) -> None:
@@ -322,16 +322,19 @@ class CeleryEngineAdapter:
             except asyncio.QueueFull:
                 try:
                     dropped = self._event_queue.get_nowait()
+                    # stdlib logger: %-format, NOT structlog kwargs (a
+                    # ``dropped_kind=`` kwarg raises TypeError on EVERY
+                    # full-queue event -- the soak/endurance path). B16.
                     logger.warning(
-                        "z4j celery: event queue full, dropped event",
-                        dropped_kind=getattr(dropped, "kind", "?"),
+                        "z4j celery: event queue full, dropped event (kind=%s)",
+                        getattr(dropped, "kind", "?"),
                     )
                 except asyncio.QueueEmpty:
                     pass
         # All retries exhausted - log and drop the new event.
         logger.error(
-            "z4j celery: failed to enqueue event after retries",
-            event_kind=getattr(event, "kind", "?"),
+            "z4j celery: failed to enqueue event after retries (kind=%s)",
+            getattr(event, "kind", "?"),
         )
 
     # ------------------------------------------------------------------
@@ -428,7 +431,7 @@ class CeleryEngineAdapter:
         async def _rediscover() -> None:
             try:
                 defs = await self.discover_tasks(self._discovery_hints)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("z4j watcher: re-discovery raised")
                 return
             delta = TaskRegistryDelta(
@@ -495,7 +498,7 @@ class CeleryEngineAdapter:
                         try:
                             depth = client.llen(queue_name)
                             health["queue_depths"][queue_name] = depth
-                        except Exception:  # noqa: BLE001
+                        except Exception:  # noqa: S110  best-effort per-queue depth probe
                             pass
                 # AMQP: use passive queue_declare
                 elif hasattr(conn, "channel"):
@@ -504,14 +507,15 @@ class CeleryEngineAdapter:
                         for queue_name in self._known_queues():
                             try:
                                 _, count, _ = channel.queue_declare(
-                                    queue=queue_name, passive=True,
+                                    queue=queue_name,
+                                    passive=True,
                                 )
                                 health["queue_depths"][queue_name] = count
-                            except Exception:  # noqa: BLE001
+                            except Exception:  # noqa: S110  best-effort per-queue depth probe
                                 pass
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: S110  best-effort broker channel probe
                         pass
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             health["broker_error"] = str(exc)[:200]
 
         # Worker stats from control.inspect() - expensive (broker
@@ -524,7 +528,7 @@ class CeleryEngineAdapter:
             try:
                 self._cached_worker_stats = self.get_worker_details()
                 self._last_worker_stats_at = now
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: S110  best-effort worker-stats refresh
                 pass
 
         if self._cached_worker_stats:
@@ -543,7 +547,7 @@ class CeleryEngineAdapter:
             if "sqs" in url.lower():
                 return "sqs"
             return "unknown"
-        except Exception:  # noqa: BLE001
+        except Exception:
             return "unknown"
 
     def get_worker_details(self, hostname: str | None = None) -> dict[str, Any]:
@@ -599,7 +603,7 @@ class CeleryEngineAdapter:
             for worker, cfg in conf.items():
                 result.setdefault(worker, {})["conf"] = _redact_worker_conf(cfg)
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "z4j celery: worker inspect failed: %s",
                 str(exc)[:200],
@@ -616,14 +620,13 @@ class CeleryEngineAdapter:
             # Try to get queues from the app's active consumer
             queues = self.celery_app.conf.get("task_queues")
             if queues:
-                return [
-                    getattr(q, "name", str(q)) for q in queues
-                ]
+                return [getattr(q, "name", str(q)) for q in queues]
             default = self.celery_app.conf.get(
-                "task_default_queue", "celery",
+                "task_default_queue",
+                "celery",
             )
             return [default]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ["celery"]
 
     async def get_task(self, task_id: str) -> Task | None:
@@ -633,7 +636,7 @@ class CeleryEngineAdapter:
         # backend directly can override it.
         try:
             _ = self.celery_app.AsyncResult(task_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             raise NotFoundError(f"task {task_id!r} not found") from None
         return None
 
@@ -667,9 +670,9 @@ class CeleryEngineAdapter:
                     traceback = res.traceback
                     if traceback:
                         exc_info = str(traceback)[:2000]
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: S110  best-effort traceback extraction
                     pass
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CommandResult(
                 status="success",
                 result={
@@ -685,7 +688,7 @@ class CeleryEngineAdapter:
                 date_done = res.date_done
                 if date_done is not None:
                     finished_at = date_done.isoformat()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: S110  best-effort date_done extraction
                 pass
         return CommandResult(
             status="success",
@@ -753,7 +756,7 @@ class CeleryEngineAdapter:
             else:
                 result = self.celery_app.send_task(name, **send_kwargs)
             new_id = getattr(result, "id", None) or getattr(result, "task_id", None)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CommandResult(status="failed", error=str(exc))
         return CommandResult(
             status="success",
@@ -783,9 +786,9 @@ class CeleryEngineAdapter:
 
     async def bulk_retry(
         self,
-        filter: dict[str, Any],
+        filter: dict[str, Any],  # noqa: A002  public bulk_retry signature
         *,
-        max: int = 1000,
+        max: int = 1000,  # noqa: A002  public bulk_retry signature
     ) -> CommandResult:
         task_ids_raw = filter.get("task_ids")
         task_ids: list[str] | None = None
@@ -831,7 +834,7 @@ class CeleryEngineAdapter:
         """Grow the worker's process pool by ``delta``."""
         try:
             self.celery_app.control.pool_grow(delta, destination=[worker_name])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CommandResult(status="failed", error=f"pool_grow failed: {exc}")
         return CommandResult(status="success", result={"worker": worker_name, "delta": delta})
 
@@ -839,7 +842,7 @@ class CeleryEngineAdapter:
         """Shrink the worker's process pool by ``delta``."""
         try:
             self.celery_app.control.pool_shrink(delta, destination=[worker_name])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CommandResult(status="failed", error=f"pool_shrink failed: {exc}")
         return CommandResult(status="success", result={"worker": worker_name, "delta": delta})
 
@@ -847,7 +850,7 @@ class CeleryEngineAdapter:
         """Start consuming from an additional queue."""
         try:
             self.celery_app.control.add_consumer(queue, destination=[worker_name])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CommandResult(status="failed", error=f"add_consumer failed: {exc}")
         return CommandResult(status="success", result={"worker": worker_name, "queue": queue})
 
@@ -855,7 +858,7 @@ class CeleryEngineAdapter:
         """Stop consuming from a queue."""
         try:
             self.celery_app.control.cancel_consumer(queue, destination=[worker_name])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return CommandResult(status="failed", error=f"cancel_consumer failed: {exc}")
         return CommandResult(status="success", result={"worker": worker_name, "queue": queue})
 
@@ -897,7 +900,7 @@ def _safe_str_attr(obj: Any, name: str, default: str) -> str:
     try:
         v = getattr(obj, name, None)
         return str(v) if v is not None else default
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 

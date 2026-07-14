@@ -98,7 +98,7 @@ async def retry_task_action(
     """
     try:
         async_result = celery_app.AsyncResult(task_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return CommandResult(status="failed", error=f"AsyncResult lookup failed: {exc}")
 
     task_name = _resolve_task_name(async_result)
@@ -133,7 +133,7 @@ async def retry_task_action(
 
     try:
         new_async = celery_app.send_task(task_name, **send_kwargs)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return CommandResult(status="failed", error=f"send_task failed: {exc}")
 
     new_task_id = getattr(new_async, "id", None) or getattr(new_async, "task_id", None)
@@ -167,8 +167,8 @@ _BULK_RETRY_HARD_CAP: int = 10_000
 async def bulk_retry_action(
     celery_app: Any,
     *,
-    filter: dict[str, Any],
-    max: int = 1000,
+    filter: dict[str, Any],  # noqa: A002  public bulk_retry signature
+    max: int = 1000,  # noqa: A002  public bulk_retry signature
     task_ids: list[str] | None = None,
     task_priorities: dict[str, object] | None = None,
 ) -> CommandResult:
@@ -227,10 +227,12 @@ async def bulk_retry_action(
         # Yield to the event loop every 100 retries so heartbeats /
         # incoming frames don't starve while a long bulk runs.
         await _asyncio.sleep(0)
-        for tid in ids[batch_start:batch_start + 100]:
+        for tid in ids[batch_start : batch_start + 100]:
             tid_priority = (task_priorities or {}).get(tid)
             single = await retry_task_action(
-                celery_app, task_id=tid, priority=tid_priority,
+                celery_app,
+                task_id=tid,
+                priority=tid_priority,
             )
             if single.status == "success" and single.result is not None:
                 new_id = single.result.get("new_task_id")
@@ -338,8 +340,7 @@ def _eta_from_timestamp(eta: float | None) -> Any:
     delta = (target - now).total_seconds()
     if delta < -_ETA_MAX_PAST_SECONDS:
         raise ValueError(
-            f"retry eta is {-delta:.0f}s in the past "
-            f"(max allowed: {_ETA_MAX_PAST_SECONDS}s)",
+            f"retry eta is {-delta:.0f}s in the past (max allowed: {_ETA_MAX_PAST_SECONDS}s)",
         )
     if delta > _ETA_MAX_FUTURE_SECONDS:
         raise ValueError(

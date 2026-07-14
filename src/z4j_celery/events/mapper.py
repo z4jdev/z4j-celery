@@ -86,7 +86,7 @@ def _scrub_kwargs(
     return scrubbed
 
 
-def _resolve_task_name(
+def _resolve_task_name(  # noqa: PLR0911  name-source fallbacks
     task: Any,
     *,
     fallback_hint: str | None = None,
@@ -337,9 +337,7 @@ def build_task_failed_event(
     # secret that lived in the failing function's frame. Redact the
     # traceback through the same engine as the exception message,
     # otherwise we leak credentials to the brain on every failure.
-    traceback_scrubbed: Any = (
-        redaction.scrub(traceback) if traceback is not None else None
-    )
+    traceback_scrubbed: Any = redaction.scrub(traceback) if traceback is not None else None
 
     data = _base_data(
         task_name=task_name,
