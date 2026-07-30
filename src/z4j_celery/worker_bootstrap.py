@@ -12,7 +12,7 @@ only runs under ``uvicorn`` / the WSGI server, NOT under
 ``celery worker``. Historically this meant FastAPI shops running
 Celery workers saw a half-empty dashboard.
 
-This module closes that gap. A :func:`celery.signals.worker_init`
+This module closes that gap. A :func:`celery.signals.worker_ready`
 handler, registered at import time, spins up the full z4j agent
 (transport, buffer, dispatcher, heartbeat, Celery engine adapter)
 in the worker process. The handler is idempotent, opt-out via
@@ -27,8 +27,8 @@ a FastAPI or Flask app the chain is:
     celery -A app:celery_app worker     # celery imports `app`
     → app imports z4j_fastapi           # your app.py does this
     → z4j_fastapi imports z4j_celery    # ← NEW: see __init__.py
-    → z4j_celery registers worker_init  # ← this module
-    → worker_init fires on boot
+    → z4j_celery registers worker_ready  # ← this module
+    → worker_ready fires once the pool is up
     → z4j agent starts inside the worker
 
 For operators who want the opposite - Celery workers that should
@@ -39,7 +39,7 @@ Public entry points:
 
 - :func:`register_worker_bootstrap` - idempotent signal registration.
   Safe to call multiple times.
-- :func:`_on_worker_init` - the handler itself. Exported for tests.
+- :func:`_on_worker_ready` - the handler itself. Exported for tests.
 """
 
 from __future__ import annotations
@@ -225,12 +225,25 @@ def _resolve_framework_adapter(celery_app: Any) -> Any | None:
 
 
 @safe_boundary
-def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
-    """Celery ``worker_init`` signal handler.
+def _on_worker_ready(*, sender: Any = None, **_: Any) -> None:
+    """Celery ``worker_ready`` signal handler.
 
-    Starts the z4j agent runtime in the current worker process.
+    Starts the z4j agent runtime in the worker's MainProcess.
     Idempotent: if the runtime is already running in this process
     (e.g. signal fired twice), does nothing.
+
+    Fork-safety: this handler MUST run on ``worker_ready`` (fires in
+    the MainProcess after the prefork pool has forked its children
+    and the consumer loop is up), NOT ``worker_init`` (fires before
+    the fork). The runtime starts threads (WebSocket transport with
+    its own asyncio loop, heartbeat, the broker events monitor), and
+    forking a process that already has live threads and open sockets
+    intermittently corrupts billiard's asynpool bookkeeping. The
+    observed failure: the worker consumes and reserves tasks
+    (``task.received`` fires, broadcasts answered) but never
+    dispatches them to the idle pool children -- a race, so one boot
+    works and the next wedges. Between init and ready is sub-second,
+    so deferring loses nothing observable.
 
     Wrapped in :func:`safe_boundary` so even a ``BaseException``
     inside our boot path (``KeyboardInterrupt`` during startup, an
@@ -265,7 +278,17 @@ def _on_worker_init(*, sender: Any = None, **_: Any) -> None:
 
         from z4j_celery.engine import CeleryEngineAdapter
 
-        engine = CeleryEngineAdapter(celery_app=celery_app)
+        # ``worker_ready``'s sender is the Consumer, whose ``hostname``
+        # is this worker's Celery node name. Handing it to the adapter
+        # lets the heartbeat's health refresh inspect a KNOWN
+        # destination (returns on first reply) instead of broadcasting
+        # with destination=None, where every call blocks its full
+        # timeout and the five-call detail refresh overran the 5s
+        # provider cap on every cycle.
+        engine = CeleryEngineAdapter(
+            celery_app=celery_app,
+            worker_hostname=getattr(sender, "hostname", None),
+        )
         # Detect the host framework (Django / Flask / FastAPI / bare)
         # so the agent's hello frame reports the right framework_name
         # and the brain dashboard's Framework column shows the
@@ -347,7 +370,7 @@ def _on_worker_shutdown(*_: Any, **__: Any) -> None:
 
 
 def register_worker_bootstrap() -> None:
-    """Wire the Celery ``worker_init`` / ``worker_shutdown`` signals.
+    """Wire the Celery ``worker_ready`` / ``worker_shutdown`` signals.
 
     Idempotent: repeated calls are no-ops after the first. Safe to
     call from module-level code in any package that depends on
@@ -369,14 +392,17 @@ def register_worker_bootstrap() -> None:
             return
         try:
             from celery.signals import (  # type: ignore[import-not-found]
-                worker_init,
+                worker_ready,
                 worker_shutdown,
             )
         except Exception:
             # Celery isn't installed. Nothing to do - this process
             # will never be a Celery worker.
             return
-        worker_init.connect(_on_worker_init, weak=False)
+        # ``worker_ready``, NOT ``worker_init``: the runtime starts
+        # threads, and threads must not exist when the prefork pool
+        # forks (see _on_worker_ready's fork-safety note).
+        worker_ready.connect(_on_worker_ready, weak=False)
         worker_shutdown.connect(_on_worker_shutdown, weak=False)
         _signal_connected = True
 

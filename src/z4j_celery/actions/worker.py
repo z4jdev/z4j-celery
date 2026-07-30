@@ -11,12 +11,16 @@ process restart handled by their supervisor.
 
 from __future__ import annotations
 
-import asyncio
-import functools
 import logging
 from typing import Any
 
 from z4j_core.models import CommandResult
+
+from z4j_celery._offload import (
+    OffloadTimeoutError,
+    indeterminate_timeout_result,
+    offload,
+)
 
 logger = logging.getLogger("z4j.adapter.celery.actions.worker")
 
@@ -51,23 +55,18 @@ async def restart_worker_action(
         worker card for state changes.
     """
     try:
-        loop = asyncio.get_running_loop()
-        await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                functools.partial(
-                    celery_app.control.broadcast,
-                    "pool_restart",
-                    destination=[worker_name],
-                    arguments={"reload": True},
-                ),
-            ),
+        await offload(
+            celery_app.control.broadcast,
+            "pool_restart",
+            destination=[worker_name],
+            arguments={"reload": True},
             timeout=_BROADCAST_TIMEOUT,
         )
-    except TimeoutError:
-        return CommandResult(
-            status="failed",
-            error=f"worker restart broadcast timed out after {_BROADCAST_TIMEOUT}s",
+    except OffloadTimeoutError:
+        return indeterminate_timeout_result(
+            "worker restart broadcast",
+            _BROADCAST_TIMEOUT,
+            hint="the pool restart may still be delivered",
         )
     except Exception as exc:
         return CommandResult(

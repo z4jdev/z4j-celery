@@ -66,7 +66,7 @@ _ENGINE_NAME = "celery"
 # dashboard. A future Celery release adding a new credentialed key would
 # silently leak under a denylist, so allowlist is the safer posture.
 #
-# Round-7 audit finding R7-H1: the brain persists worker_metadata.conf
+# Round-7 audit finding: the brain persists worker_metadata.conf
 # verbatim and exposes it to ProjectRole.VIEWER over
 # ``GET /api/v1/projects/{slug}/workers/{worker_id}``. Without this
 # filter at source, every viewer-role member could read broker / backend
@@ -130,15 +130,28 @@ class CeleryEngineAdapter:
 
     name: str = _ENGINE_NAME
     protocol_version: str = PROTOCOL_VERSION
+    # Boundary A (1.8.0): adapter-owned proof used by z4j-bare when it
+    # derives this loaded adapter's session capability. Current Celery retry
+    # never executes the brain's redacted snapshot as real task arguments.
+    safe_retry_by_reference: bool = True
 
     def __init__(
         self,
         *,
         celery_app: Any,
         redaction: RedactionEngine | None = None,
+        worker_hostname: str | None = None,
     ) -> None:
         self.celery_app = celery_app
         self.redaction = redaction or RedactionEngine()
+        # The Celery node name of the worker THIS adapter runs inside
+        # (e.g. ``celery@host``), when known. worker_bootstrap passes it
+        # from the ``worker_ready`` sender. With a concrete destination,
+        # ``control.inspect`` returns as soon as that node replies; with
+        # ``destination=None`` every broadcast blocks for its FULL
+        # timeout (the reply count is unknown), which is what made the
+        # heartbeat's health refresh overrun its 5s provider cap.
+        self.worker_hostname = worker_hostname
         self._event_queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=10_000)
         self._signal_hooks: CelerySignalHooks | None = None
         self._broker_monitor: Any = None
@@ -151,7 +164,7 @@ class CeleryEngineAdapter:
         self._discovery_hints: DiscoveryHints | None = None
         self._registry_loop: asyncio.AbstractEventLoop | None = None
         # Worker stats cache for get_health(). MUST be instance-scoped
-        # (R8-L2): pre-1.6.7 these lived at class scope (engine.py:463-464),
+        # pre-1.6.7 these lived at class scope (engine.py:463-464),
         # which let two CeleryEngineAdapter instances in the same Python
         # process see each other's cached worker_details payload. In single-
         # tenant prod that was harmless; in multi-tenant tests and in the
@@ -525,11 +538,7 @@ class CeleryEngineAdapter:
 
         now = _time.monotonic()
         if now - self._last_worker_stats_at > 60:
-            try:
-                self._cached_worker_stats = self.get_worker_details()
-                self._last_worker_stats_at = now
-            except Exception:  # noqa: S110  best-effort worker-stats refresh
-                pass
+            self._refresh_worker_stats(now)
 
         if self._cached_worker_stats:
             health["worker_details"] = self._cached_worker_stats
@@ -549,6 +558,47 @@ class CeleryEngineAdapter:
             return "unknown"
         except Exception:
             return "unknown"
+
+    def _refresh_worker_stats(self, now: float) -> None:
+        """Refresh the heartbeat's worker-stats cache (best-effort).
+
+        With our own node name, the full five-broadcast detail returns
+        in milliseconds (known destination => inspect returns on first
+        reply). Without it (web-process installs), the
+        ``destination=None`` broadcasts each block their FULL timeout --
+        five of them overran the heartbeat's 5s provider cap on every
+        refresh -- so fall back to a single cheap ``stats()`` probe.
+        """
+        try:
+            if self.worker_hostname:
+                self._cached_worker_stats = self.get_worker_details(
+                    hostname=self.worker_hostname,
+                )
+            else:
+                self._cached_worker_stats = self._worker_stats_basic()
+            self._last_worker_stats_at = now
+        except Exception:  # noqa: S110  best-effort worker-stats refresh
+            pass
+
+    def _worker_stats_basic(self) -> dict[str, Any]:
+        """Single-broadcast worker stats for the heartbeat fallback.
+
+        Used when the adapter does not know its own node name (e.g. an
+        agent installed in a web process rather than a worker). One
+        ``stats()`` broadcast at a 1s timeout blocks exactly 1s with an
+        unknown destination -- comfortably inside the heartbeat's 5s
+        provider cap -- at the cost of the richer active / queues /
+        registered / conf detail the full path collects.
+        """
+        result: dict[str, Any] = {}
+        try:
+            inspector = self.celery_app.control.inspect(timeout=1.0)
+            stats = inspector.stats() or {}
+            for worker, data in stats.items():
+                result.setdefault(worker, {})["stats"] = data
+        except Exception:  # noqa: S110  best-effort stats probe
+            pass
+        return result
 
     def get_worker_details(self, hostname: str | None = None) -> dict[str, Any]:
         """Collect detailed worker stats via control.inspect().
@@ -767,14 +817,20 @@ class CeleryEngineAdapter:
         self,
         task_id: str,
         *,
+        task_name: str | None = None,
         override_args: tuple[Any, ...] | None = None,
         override_kwargs: dict[str, Any] | None = None,
         eta: float | None = None,
         priority: object = None,
     ) -> CommandResult:
+        # ``task_name`` is the brain-forwarded name from its tasks table
+        # (dispatcher contract). Without it a default-config
+        # Celery app (``result_extended`` off) cannot resolve the name
+        # from its result backend and the retry fails.
         return await retry_task_action(
             self.celery_app,
             task_id=task_id,
+            task_name=task_name,
             override_args=override_args,
             override_kwargs=override_kwargs,
             eta=eta,
@@ -824,8 +880,26 @@ class CeleryEngineAdapter:
             force=force,
         )
 
-    async def requeue_dead_letter(self, task_id: str) -> CommandResult:
-        return await requeue_dead_letter_action(self.celery_app, task_id=task_id)
+    async def requeue_dead_letter(
+        self,
+        task_id: str,
+        *,
+        task_name: str | None = None,
+        override_args: tuple[Any, ...] | None = None,
+        override_kwargs: dict[str, Any] | None = None,
+    ) -> CommandResult:
+        # ``task_name`` is the brain-forwarded name (same contract
+        # as retry_task). Without it a default-config Celery app
+        # (``result_extended`` off) cannot resolve the name from the
+        # result backend, so the DLQ requeue failed "could not resolve
+        # task name" -- the advertised requeue-from-DLQ button was dead.
+        return await requeue_dead_letter_action(
+            self.celery_app,
+            task_id=task_id,
+            task_name=task_name,
+            override_args=override_args,
+            override_kwargs=override_kwargs,
+        )
 
     async def restart_worker(self, worker_id: str) -> CommandResult:
         return await restart_worker_action(self.celery_app, worker_name=worker_id)

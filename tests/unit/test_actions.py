@@ -71,6 +71,85 @@ class TestRetryAction:
         assert result.status == "failed"
         assert "task name" in (result.error or "")
 
+    async def test_retry_fails_closed_without_stored_args_h3(self, fake_app) -> None:
+        # H3/M7: with result_extended OFF the result backend stores no
+        # arguments (AsyncResult.args is None). With no operator override
+        # and no failed-job registry to requeue by reference, retry must
+        # FAIL CLOSED, not send_task with an empty payload.
+        class _NoArgsResult:
+            def __init__(self, tid: str) -> None:
+                self.id = tid
+                self.name = "myapp.tasks.work"
+                self.args = None  # result_extended off -> not stored
+                self.kwargs = None
+
+        fake_app.AsyncResult = _NoArgsResult  # type: ignore[method-assign]
+        before = len(fake_app.sent_tasks)
+        result = await retry_task_action(
+            fake_app,
+            task_id="t-noargs",
+            task_name="myapp.tasks.work",
+        )
+        assert result.status == "failed"
+        assert "result_extended" in (result.error or "")
+        # Nothing was enqueued (no empty-args send).
+        assert len(fake_app.sent_tasks) == before
+
+    async def test_retry_with_overrides_succeeds_even_without_stored_args_h3(
+        self,
+        fake_app,
+    ) -> None:
+        # The operator "retry with different inputs" path stays functional
+        # even when the backend stored nothing: overrides are authoritative.
+        class _NoArgsResult:
+            def __init__(self, tid: str) -> None:
+                self.id = tid
+                self.name = "myapp.tasks.work"
+                self.args = None
+                self.kwargs = None
+
+        fake_app.AsyncResult = _NoArgsResult  # type: ignore[method-assign]
+        result = await retry_task_action(
+            fake_app,
+            task_id="t-noargs",
+            task_name="myapp.tasks.work",
+            override_args=("explicit",),
+            override_kwargs={"k": 1},
+        )
+        assert result.status == "success"
+        assert fake_app.sent_tasks[-1]["args"] == ["explicit"]
+
+    async def test_retry_fails_closed_on_partial_override_h3(self, fake_app) -> None:
+        # H3: with result_extended OFF and only ONE override half supplied,
+        # the OTHER half is unresolvable. Retry must fail closed rather than
+        # silently emptying it (was: args-only -> (("x",), {}) erasing the
+        # original kwargs; kwargs-only -> ((), {...}) erasing the args).
+        class _NoArgsResult:
+            def __init__(self, tid: str) -> None:
+                self.id = tid
+                self.name = "myapp.tasks.work"
+                self.args = None
+                self.kwargs = None
+
+        fake_app.AsyncResult = _NoArgsResult  # type: ignore[method-assign]
+        before = len(fake_app.sent_tasks)
+        r_args_only = await retry_task_action(
+            fake_app,
+            task_id="t-args-only",
+            task_name="myapp.tasks.work",
+            override_args=("x",),
+        )
+        assert r_args_only.status == "failed"
+        r_kwargs_only = await retry_task_action(
+            fake_app,
+            task_id="t-kwargs-only",
+            task_name="myapp.tasks.work",
+            override_kwargs={"k": 1},
+        )
+        assert r_kwargs_only.status == "failed"
+        # Neither partial override enqueued anything.
+        assert len(fake_app.sent_tasks) == before
+
     async def test_retry_propagates_send_task_error(self, fake_app) -> None:
         fake_app.register_result("orig-4", name="myapp.tasks.oops")
 

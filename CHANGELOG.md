@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.8.0 (2026-07-23)
+
+* The adapter now attests its safe by-reference retry contract to the exact agent session and requires the coordinated 1.8.0 bare/core runtime.
+* Retry now fails closed when arguments are unresolvable (no operator override and `result_extended` stored nothing) instead of re-running the task with an empty payload, and it honors the brain-supplied task name.
+* Destructive actions (cancel / purge / retry) offload their broker I/O on a dedicated bounded pool, with a consecutive-timeout circuit breaker on bulk retry, so a broker incident can no longer freeze the agent; a timed-out mutation is reported indeterminate, not falsely successful.
+* The in-worker agent starts on `worker_ready` (was `worker_init`, which could wedge a prefork pool after a restart) and the periodic health refresh no longer overruns its 5s cap.
+* Part of the coordinated 1.8.0 fleet release (unified fleet version, green lint/format/import-boundary gate).
+
 ## 1.7.0 (2026-07-07)
 
 * Fixed dropped-event and unknown-event-kind diagnostics that passed structlog keyword arguments to a stdlib logger.

@@ -210,7 +210,7 @@ class TestEventQueue:
 
 
 # ---------------------------------------------------------------------------
-# Round-7 audit, R7-H1: worker_conf credential leak via inspector.conf()
+# Round-7 audit: worker_conf credential leak via inspector.conf()
 # ---------------------------------------------------------------------------
 
 
@@ -218,7 +218,7 @@ class _FakeInspector:
     """Stand-in for ``celery_app.control.inspect()``.
 
     Records arguments + returns canned data per call. Used only by the
-    R7-H1 regression tests; the broader engine tests do not exercise
+    Regression tests; the broader engine tests do not exercise
     ``get_worker_details`` because the rest of the FakeCeleryApp does
     not implement ``inspect``.
     """
@@ -259,7 +259,7 @@ class _ControlWithInspect:
 
 
 class TestGetWorkerDetailsR7H1:
-    """R7-H1: ``get_worker_details`` must not expose credentialed
+    """``get_worker_details`` must not expose credentialed
     Celery conf keys to the brain (and thence to ProjectRole.VIEWER).
 
     The adapter's ``inspector.conf()`` call returns the FULL Celery
@@ -336,7 +336,7 @@ class TestGetWorkerDetailsR7H1:
             "beat_schedule",
         ):
             assert forbidden not in conf, (
-                f"R7-H1: {forbidden!r} leaked through the allowlist; the brain "
+                f": {forbidden!r} leaked through the allowlist; the brain "
                 "would persist it into workers.metadata.conf and "
                 "expose it to ProjectRole.VIEWER"
             )
@@ -429,14 +429,14 @@ class TestGetWorkerDetailsR7H1:
 
 
 # ---------------------------------------------------------------------------
-# Round-8 audit, R8-L2: CeleryEngineAdapter worker-stats cache must be
+# Round-8 audit: CeleryEngineAdapter worker-stats cache must be
 # instance-scoped (not class-scoped) to prevent cross-tenant bleed in
 # multi-brain test rigs and the 1.7 soak harness.
 # ---------------------------------------------------------------------------
 
 
 class TestCacheInstanceScopingR8L2:
-    """R8-L2: ``_last_worker_stats_at`` and ``_cached_worker_stats`` must
+    """``_last_worker_stats_at`` and ``_cached_worker_stats`` must
     live on the instance, never the class.
 
     Pre-1.6.7 these two attributes were declared at class scope
@@ -456,12 +456,12 @@ class TestCacheInstanceScopingR8L2:
         original bug shape) trips this guard immediately.
         """
         assert "_cached_worker_stats" not in CeleryEngineAdapter.__dict__, (
-            "R8-L2 regression: _cached_worker_stats reappeared at class "
+            " regression: _cached_worker_stats reappeared at class "
             "scope. Move it back into __init__ as `self._cached_worker_stats = {}` "
             "so two adapter instances in the same process don't share a dict."
         )
         assert "_last_worker_stats_at" not in CeleryEngineAdapter.__dict__, (
-            "R8-L2 regression: _last_worker_stats_at reappeared at class "
+            " regression: _last_worker_stats_at reappeared at class "
             "scope. Move it back into __init__."
         )
 
@@ -475,7 +475,7 @@ class TestCacheInstanceScopingR8L2:
         other's cache is still the empty-default state.
         """
         # Adapter A: backed by a fake_app whose control surface returns
-        # a populated worker_details payload via the existing R7-H1
+        # a populated worker_details payload via the existing
         # inspector stub. Build its own inspector so the cached dict
         # carries a fingerprint we can detect later.
         from tests.unit.conftest import FakeCeleryApp
@@ -486,7 +486,14 @@ class TestCacheInstanceScopingR8L2:
                 conf_payload={"celery@a": {"task_serializer": "json"}},
             ),
         )
-        adapter_a = CeleryEngineAdapter(celery_app=app_a)
+        # worker_hostname makes get_health() take the full-detail
+        # refresh path (known destination); without it the refresh is a
+        # single stats() probe and the conf-fingerprint below would
+        # never land in the cache.
+        adapter_a = CeleryEngineAdapter(
+            celery_app=app_a,
+            worker_hostname="celery@a",
+        )
 
         # Adapter B: distinct fake_app, distinct inspector payload.
         # We never drive get_health() on adapter_b - it must stay in
@@ -522,14 +529,14 @@ class TestCacheInstanceScopingR8L2:
 
         # The pre-1.6.7 bug: adapter_b's cache would now also contain
         # 'celery@a' because both adapters point at the SAME class-
-        # level dict. With the R8-L2 fix, adapter_b's cache is still
+        # level dict. With the fix, adapter_b's cache is still
         # the per-instance empty default.
         assert adapter_b._cached_worker_stats == {}, (
-            "R8-L2 regression: adapter_b's worker stats cache leaked "
+            " regression: adapter_b's worker stats cache leaked "
             "from adapter_a. Both adapters are sharing the class-level "
             f"mutable default. Got: {adapter_b._cached_worker_stats!r}"
         )
         assert adapter_b._last_worker_stats_at == 0.0, (
-            "R8-L2 regression: adapter_b's last-stats timestamp leaked "
+            " regression: adapter_b's last-stats timestamp leaked "
             "from adapter_a (class-level mutable shared)."
         )

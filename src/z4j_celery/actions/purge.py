@@ -32,7 +32,22 @@ from z4j_core.purge_token import (
 )
 from z4j_core.transport.hmac import decode_agent_hmac_secret
 
+from z4j_celery._offload import (
+    OffloadTimeoutError,
+    indeterminate_timeout_result,
+    offload,
+)
+
 logger = logging.getLogger("z4j.adapter.celery.actions.purge")
+
+#: Cap on each synchronous broker interaction (depth probe, purge). A
+#: broker slowdown / failover must not freeze the agent event loop -- the
+#: measure + purge both run in a thread under this timeout.
+_PURGE_TIMEOUT = 10.0
+
+
+class _PurgeUnsupported(Exception):  # noqa: N818  internal sentinel, not a public error type
+    """The kombu channel does not expose ``queue_purge``."""
 
 
 def _resolve_agent_secret() -> bytes | None:
@@ -120,6 +135,35 @@ def _measure_depth(celery_app: Any, queue_name: str) -> int | None:
     return None
 
 
+def _do_purge(celery_app: Any, queue_name: str) -> int | None:
+    """Synchronous queue purge. Returns the purged count (or None).
+
+    Raises :class:`_PurgeUnsupported` when the channel lacks
+    ``queue_purge`` -- we REFUSE to fall back to ``queue_delete`` because
+    deleting the queue tears down bindings, consumer registrations, and
+    dead-letter routing in ways "purge messages" never does. Any broker
+    exception propagates to the offloading caller.
+    """
+    with celery_app.connection_for_write() as conn:
+        channel = conn.default_channel
+        try:
+            purged = channel.queue_purge(queue_name)
+        except AttributeError as exc:
+            raise _PurgeUnsupported from exc
+    return int(purged) if isinstance(purged, int) else None
+
+
+async def _offload(func: Any, *args: Any) -> Any:
+    """Run a blocking broker call on the dedicated pool under ``_PURGE_TIMEOUT``.
+
+    Keeps kombu's synchronous connect / declare / purge off the agent's
+    event loop AND off the default executor (where heartbeat providers and
+    reconnect DNS run), so a broker slowdown cannot freeze OR starve agent
+    liveness. Raises :class:`OffloadTimeoutError` on timeout.
+    """
+    return await offload(func, *args, timeout=_PURGE_TIMEOUT)
+
+
 async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
     celery_app: Any,
     *,
@@ -143,7 +187,13 @@ async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
         ``success`` with ``{"purged": N, "depth_before": D}``,
         or ``failed`` with a clear reason.
     """
-    depth = _measure_depth(celery_app, queue_name)
+    # Depth probe touches the broker synchronously -- offload it. On a
+    # broker hang the timeout yields depth=None, which the guards below
+    # already handle (refuse without confirmation).
+    try:
+        depth = await _offload(_measure_depth, celery_app, queue_name)
+    except Exception:
+        depth = None
 
     if force:
         logger.critical(
@@ -207,26 +257,31 @@ async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
                 queue_name,
             )
 
+    # The purge itself is a synchronous broker write -- offload it under
+    # the same timeout so it cannot freeze the loop on a broker incident
+    # (precisely when the operator is trying to drain a wedged queue).
     try:
-        with celery_app.connection_for_write() as conn:
-            channel = conn.default_channel
-            try:
-                purged = channel.queue_purge(queue_name)
-            except AttributeError:
-                # Some kombu channel implementations don't expose
-                # queue_purge directly. We REFUSE to fall back to
-                # queue_delete because deleting the queue is a much
-                # more destructive operation: it tears down
-                # bindings, consumer registrations, and dead-letter
-                # routing in ways "purge messages" never does.
-                return CommandResult(
-                    status="failed",
-                    error=(
-                        "purge_queue: kombu channel does not support "
-                        "queue_purge; refusing to fall back to "
-                        "queue_delete (would destroy bindings)"
-                    ),
-                )
+        purged = await _offload(_do_purge, celery_app, queue_name)
+    except _PurgeUnsupported:
+        # Channel lacks queue_purge; we refuse queue_delete (destroys
+        # bindings / consumer registrations / dead-letter routing).
+        return CommandResult(
+            status="failed",
+            error=(
+                "purge_queue: kombu channel does not support "
+                "queue_purge; refusing to fall back to "
+                "queue_delete (would destroy bindings)"
+            ),
+        )
+    except OffloadTimeoutError:
+        # A purge is the sharpest indeterminate case: the queue may be
+        # emptied moments after we report the timeout. Never say "failed"
+        # outright (that invites a re-purge); mark it indeterminate.
+        return indeterminate_timeout_result(
+            "purge_queue",
+            _PURGE_TIMEOUT,
+            hint="the queue may still be purged",
+        )
     except Exception as exc:
         return CommandResult(
             status="failed",
@@ -238,7 +293,7 @@ async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
         result={
             "queue": queue_name,
             "depth_before": depth,
-            "purged": int(purged) if isinstance(purged, int) else None,
+            "purged": purged,
             "force": force,
         },
     )

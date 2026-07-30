@@ -13,13 +13,17 @@ suffixed with ``/s`` (per second), ``/m`` (per minute), or ``/h``
 
 from __future__ import annotations
 
-import asyncio
-import functools
 import logging
 import re
 from typing import Any
 
 from z4j_core.models import CommandResult
+
+from z4j_celery._offload import (
+    OffloadTimeoutError,
+    indeterminate_timeout_result,
+    offload,
+)
 
 logger = logging.getLogger("z4j.adapter.celery.actions.rate_limit")
 
@@ -78,23 +82,18 @@ async def rate_limit_action(
     destination = [worker_name] if worker_name else None
 
     try:
-        loop = asyncio.get_running_loop()
-        await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                functools.partial(
-                    celery_app.control.rate_limit,
-                    task_name,
-                    rate,
-                    destination=destination,
-                ),
-            ),
+        await offload(
+            celery_app.control.rate_limit,
+            task_name,
+            rate,
+            destination=destination,
             timeout=_BROADCAST_TIMEOUT,
         )
-    except TimeoutError:
-        return CommandResult(
-            status="failed",
-            error=f"rate_limit broadcast timed out after {_BROADCAST_TIMEOUT}s",
+    except OffloadTimeoutError:
+        return indeterminate_timeout_result(
+            "rate_limit broadcast",
+            _BROADCAST_TIMEOUT,
+            hint="the rate limit may still be applied to some workers",
         )
     except Exception as exc:
         return CommandResult(

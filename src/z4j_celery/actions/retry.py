@@ -20,7 +20,20 @@ from typing import Any
 
 from z4j_core.models import CommandResult
 
+from z4j_celery._offload import (
+    OffloadTimeoutError,
+    indeterminate_timeout_result,
+    offload,
+)
+
 logger = logging.getLogger("z4j.adapter.celery.actions.retry")
+
+#: Cap on the offloaded broker/result-backend interaction per retry.
+_RETRY_TIMEOUT = 10.0
+
+
+class _RetryError(Exception):
+    """A retry failed for a reportable reason (message becomes the error)."""
 
 
 #: Celery's broker-level priority is an integer in 0-9 (RabbitMQ)
@@ -66,6 +79,7 @@ async def retry_task_action(
     celery_app: Any,
     *,
     task_id: str,
+    task_name: str | None = None,
     override_args: tuple[Any, ...] | None = None,
     override_kwargs: dict[str, Any] | None = None,
     eta: float | None = None,
@@ -96,22 +110,8 @@ async def retry_task_action(
           retry was accepted by the broker.
         - ``failed`` with an ``error`` explaining why not.
     """
-    try:
-        async_result = celery_app.AsyncResult(task_id)
-    except Exception as exc:
-        return CommandResult(status="failed", error=f"AsyncResult lookup failed: {exc}")
-
-    task_name = _resolve_task_name(async_result)
-    if not task_name:
-        return CommandResult(
-            status="failed",
-            error=f"could not resolve task name for {task_id!r}",
-        )
-
-    args, kwargs = _resolve_args(async_result, override_args, override_kwargs)
-
-    # Validate eta BEFORE calling send_task so an out-of-range
-    # Value never reaches the broker.
+    # Validate eta BEFORE touching the broker so an out-of-range value
+    # never reaches send_task. Pure CPU -- stays on the loop.
     try:
         eta_dt = _eta_from_timestamp(eta)
     except ValueError as exc:
@@ -119,37 +119,100 @@ async def retry_task_action(
 
     priority_int = _coerce_priority(priority)
 
-    send_kwargs: dict[str, Any] = {
-        "args": args,
-        "kwargs": kwargs,
-        "eta": eta_dt,
-    }
-    if priority_int is not None:
-        # Celery accepts ``priority`` as a kwarg on
-        # ``send_task`` / ``apply_async``. The broker plugin
-        # (RabbitMQ x-max-priority, Redis sorted-set queues, …)
-        # actually does the routing; we just tag the message.
-        send_kwargs["priority"] = priority_int
-
+    # The AsyncResult name/args reads and send_task are synchronous
+    # result-backend + kombu broker I/O. Run them in a thread under a
+    # timeout so a broker slowdown / failover cannot freeze the agent's
+    # single event loop (heartbeat, send loop, ack watchdog, WS
+    # ping/pong). ``bulk_retry`` awaits these one at a time, so the pool
+    # is never oversubscribed.
     try:
-        new_async = celery_app.send_task(task_name, **send_kwargs)
+        resolved_name, new_task_id = await offload(
+            _do_retry_io,
+            celery_app,
+            task_id=task_id,
+            task_name=task_name,
+            override_args=override_args,
+            override_kwargs=override_kwargs,
+            eta_dt=eta_dt,
+            priority_int=priority_int,
+            timeout=_RETRY_TIMEOUT,
+        )
+    except OffloadTimeoutError:
+        return indeterminate_timeout_result(
+            "retry",
+            _RETRY_TIMEOUT,
+            hint="the task may still have been re-enqueued",
+        )
+    except _RetryError as exc:
+        return CommandResult(status="failed", error=str(exc))
     except Exception as exc:
         return CommandResult(status="failed", error=f"send_task failed: {exc}")
 
-    new_task_id = getattr(new_async, "id", None) or getattr(new_async, "task_id", None)
-    if not new_task_id:
-        return CommandResult(
-            status="failed",
-            error="send_task returned without a task id",
-        )
     return CommandResult(
         status="success",
         result={
-            "new_task_id": str(new_task_id),
-            "task_name": task_name,
+            "new_task_id": new_task_id,
+            "task_name": resolved_name,
             "priority": priority_int,
         },
     )
+
+
+def _do_retry_io(
+    celery_app: Any,
+    *,
+    task_id: str,
+    task_name: str | None,
+    override_args: tuple[Any, ...] | None,
+    override_kwargs: dict[str, Any] | None,
+    eta_dt: Any,
+    priority_int: int | None,
+) -> tuple[str, str]:
+    """Synchronous retry I/O: resolve name/args from the result backend
+    (fallback only -- the brain-supplied ``task_name`` is authoritative,
+    same contract as the other adapters) and publish via
+    ``send_task``. Returns ``(resolved_name, new_task_id)``; raises
+    :class:`_RetryError` for reportable failures. Runs in an executor
+    thread (see the caller) so the kombu/result-backend blocking stays
+    off the event loop.
+    """
+    async_result = celery_app.AsyncResult(task_id)
+
+    name = task_name or _resolve_task_name(async_result)
+    if not name:
+        # result_extended is off by default, so a default-config Celery
+        # app can never resolve the name from the backend -- which is why
+        # the brain-supplied name is authoritative.
+        raise _RetryError(f"could not resolve task name for {task_id!r}")
+
+    resolved = _resolve_args(async_result, override_args, override_kwargs)
+    if resolved is None:
+        # 1.7.1 (H3/M7): no operator overrides AND the Celery result
+        # backend did not store the original arguments (result_extended is
+        # off by default). Celery has no failed-job registry to requeue by
+        # reference, and the brain stores task arguments REDACTED and can no
+        # longer forward them. Re-running with an empty payload would
+        # silently execute the task with the wrong inputs, so fail closed.
+        raise _RetryError(
+            f"cannot retry {task_id!r}: no operator override_args / "
+            "override_kwargs, and the Celery result backend did not store "
+            "the original arguments (result_extended is off by default). "
+            "Enable result_extended so Celery preserves the arguments, or "
+            "use 'retry with different inputs' to supply them explicitly."
+        )
+    args, kwargs = resolved
+
+    send_kwargs: dict[str, Any] = {"args": args, "kwargs": kwargs, "eta": eta_dt}
+    if priority_int is not None:
+        # Celery accepts ``priority`` as a send_task kwarg; the broker
+        # plugin (RabbitMQ x-max-priority, Redis sorted-set queues) routes.
+        send_kwargs["priority"] = priority_int
+
+    new_async = celery_app.send_task(name, **send_kwargs)
+    new_task_id = getattr(new_async, "id", None) or getattr(new_async, "task_id", None)
+    if not new_task_id:
+        raise _RetryError("send_task returned without a task id")
+    return name, str(new_task_id)
 
 
 #: Hard ceiling on the number of tasks a single ``bulk_retry``
@@ -209,6 +272,9 @@ async def bulk_retry_action(
             ),
         )
 
+    task_names_raw = filter.get("task_names")
+    task_names: dict[str, str] = task_names_raw if isinstance(task_names_raw, dict) else {}
+
     # Clamp BOTH the caller-provided cap AND the input
     # length to a hard ceiling. A compromised caller cannot bypass
     # this by passing ``max=2**31``.
@@ -222,18 +288,48 @@ async def bulk_retry_action(
 
     new_task_ids: dict[str, str] = {}
     failures: dict[str, str] = {}
+    # M10: circuit breaker. Each retry against a hung broker burns the full
+    # per-task offload timeout (~10s) inline on the receive loop, so a large
+    # batch would freeze the agent for minutes -- ignoring every other command
+    # and stalling event-batch acks -- while heartbeats keep flowing and it
+    # looks healthy. Abort after a short run of CONSECUTIVE broker timeouts
+    # rather than grinding through every id; the broker is clearly unhealthy.
+    circuit_break_after = 3
+    consecutive_timeouts = 0
+    broker_unhealthy = False
+    processed = 0
 
     for batch_start in range(0, len(ids), 100):
+        if broker_unhealthy:
+            break
         # Yield to the event loop every 100 retries so heartbeats /
         # incoming frames don't starve while a long bulk runs.
         await _asyncio.sleep(0)
         for tid in ids[batch_start : batch_start + 100]:
             tid_priority = (task_priorities or {}).get(tid)
+            # ``filter["task_names"]`` is the server-owned
+            # {task_id: task_name} map the brain forwards with the
+            # command (same contract the RQ adapter consumes). Without
+            # it every per-task retry fails on a default-config Celery
+            # app ("result_extended" off means the result backend never
+            # stored the name).
+            tid_name = task_names.get(tid) if task_names else None
             single = await retry_task_action(
                 celery_app,
                 task_id=tid,
+                task_name=tid_name if isinstance(tid_name, str) else None,
                 priority=tid_priority,
             )
+            processed += 1
+            # An offload timeout tags result["indeterminate"] -- the
+            # broker-hang signal the breaker counts. M2: only a genuine
+            # SUCCESS resets the counter; a determinate failure is neutral
+            # (neither trips nor resets), so an alternating timeout/failure
+            # pattern cannot starve the breaker into grinding the whole batch.
+            if single.result and single.result.get("indeterminate"):
+                consecutive_timeouts += 1
+            elif single.status == "success":
+                consecutive_timeouts = 0
             if single.status == "success" and single.result is not None:
                 new_id = single.result.get("new_task_id")
                 if isinstance(new_id, str):
@@ -242,6 +338,9 @@ async def bulk_retry_action(
                     failures[tid] = "missing new_task_id"
             else:
                 failures[tid] = single.error or "unknown error"
+            if consecutive_timeouts >= circuit_break_after:
+                broker_unhealthy = True
+                break
 
     return CommandResult(
         status="success",
@@ -250,6 +349,9 @@ async def bulk_retry_action(
             "requested": len(ids),
             "succeeded": len(new_task_ids),
             "failed": len(failures),
+            # Ids never attempted because the breaker tripped on a hung broker.
+            "skipped": len(ids) - processed,
+            "circuit_broken": broker_unhealthy,
             "capped": capped,
             "hard_cap": _BULK_RETRY_HARD_CAP,
             "new_task_ids": new_task_ids,
@@ -283,25 +385,38 @@ def _resolve_args(
     async_result: Any,
     override_args: tuple[Any, ...] | None,
     override_kwargs: dict[str, Any] | None,
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """Compute the effective args+kwargs for a retry.
+) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+    """Compute the effective args+kwargs for a retry, or ``None`` if
+    they cannot be safely resolved.
 
-    Overrides win; anything not overridden is pulled from the
-    original task's stored args if the result backend carries them.
+    Safe argument sources are (a) operator-supplied overrides and (b)
+    what the Celery RESULT BACKEND itself stored (``result_extended``
+    on) -- Celery's own authoritative storage, NOT the brain's redacted
+    Task snapshot. 1.7.1 (H3/M7): when NEITHER source exists we return
+    ``None`` so the caller fails closed, instead of the pre-1.7.1
+    behavior of silently falling back to an empty ``()`` / ``{}`` and
+    re-running the task with the wrong inputs on a default-config app.
     """
-    original_args: tuple[Any, ...] = ()
-    original_kwargs: dict[str, Any] = {}
-
     stored = getattr(async_result, "args", None)
-    if isinstance(stored, (list, tuple)):
-        original_args = tuple(stored)
-
     stored_kwargs = getattr(async_result, "kwargs", None)
-    if isinstance(stored_kwargs, dict):
-        original_kwargs = dict(stored_kwargs)
+    backend_has_args = isinstance(stored, (list, tuple))
+    backend_has_kwargs = isinstance(stored_kwargs, dict)
 
-    args = override_args if override_args is not None else original_args
-    kwargs = override_kwargs if override_kwargs is not None else original_kwargs
+    # 1.7.1 (H3/M7): EACH half must come from an authoritative source --
+    # an operator override or Celery's own result-backend storage
+    # (result_extended on). If EITHER half has neither source we fail
+    # closed (return None) rather than silently substituting an empty
+    # () / {} and re-running the task with that half erased. This covers
+    # the partial-override case: on a default-config app (result_extended
+    # off) an args-only override leaves kwargs unresolvable (and vice
+    # versa), so the operator must supply BOTH halves explicitly.
+    args_resolvable = override_args is not None or backend_has_args
+    kwargs_resolvable = override_kwargs is not None or backend_has_kwargs
+    if not args_resolvable or not kwargs_resolvable:
+        return None
+
+    args: tuple[Any, ...] = tuple(override_args) if override_args is not None else tuple(stored)
+    kwargs = dict(override_kwargs) if override_kwargs is not None else dict(stored_kwargs)
     return args, kwargs
 
 

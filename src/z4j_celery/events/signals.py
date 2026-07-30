@@ -255,7 +255,12 @@ class CelerySignalHooks:
         einfo: Any = None,
         **kwargs: Any,
     ) -> None:
-        task_id = kwargs.get("task_id") or ""
+        # B18: the ``task_retry`` signal carries the id on ``request.id``,
+        # NOT in kwargs. Reading kwargs.get("task_id") yielded "" so the
+        # TASK_RETRIED event was uncorrelatable on solo/gevent/eventlet
+        # pools (prefork is covered by the broker-events path). Mirror the
+        # sibling _on_revoked handler.
+        task_id = _get(request, "id", _get(request, "task_id", "")) or kwargs.get("task_id") or ""
         event = build_task_retried_event(
             redaction=self.redaction,
             task_id=str(task_id),
