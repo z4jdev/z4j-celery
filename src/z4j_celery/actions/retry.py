@@ -36,31 +36,32 @@ class _RetryError(Exception):
     """A retry failed for a reportable reason (message becomes the error)."""
 
 
-#: Celery's broker-level priority is an integer in 0-9 (RabbitMQ)
-#: or 0-255 (Redis with ``x-max-priority``). z4j's user-facing
-#: priority enum (critical / high / normal / low) maps onto these
-#: ranges so a "high" task preserved across retry actually lands
-#: in the right priority slot. Mapping picked to align with
-#: Celery's own conventions: 9 = highest, 0 = lowest. Using 9 / 6
-#: / 3 / 0 (rather than 9 / 8 / 7 / 6) leaves explicit headroom
-#: for operators who set raw integer priorities directly on
-#: ``apply_async`` without going through z4j.
-_PRIORITY_LABEL_TO_INT: dict[str, int] = {
+#: RabbitMQ consumes larger numeric priorities first. Kombu's Redis
+#: transport does the opposite: it checks priority_steps [0, 3, 6, 9]
+#: in ascending order. Named z4j priorities therefore need a
+#: transport-aware mapping. Explicit integer priorities are never remapped.
+_AMQP_PRIORITY_LABEL_TO_INT: dict[str, int] = {
     "critical": 9,
     "high": 6,
     "normal": 3,
     "low": 0,
 }
+_REDIS_PRIORITY_LABEL_TO_INT: dict[str, int] = {
+    "critical": 0,
+    "high": 3,
+    "normal": 6,
+    "low": 9,
+}
 
 
-def _coerce_priority(raw: object) -> int | None:
+def _coerce_priority(raw: object, *, driver_type: str | None = None) -> int | None:
     """Normalise a priority value coming from the brain payload.
 
-    Accepts the user-facing label strings AND raw integers (so
-    operators using a custom priority scale via the REST API can
-    pass ``priority=7`` directly). Out-of-range or unrecognised
-    values resolve to ``None`` so we DON'T accidentally demote a
-    high-priority task by sending garbage through to the broker.
+    Raw integers are preserved exactly. Named labels follow Redis's
+    ascending buckets for the Redis transport and AMQP's higher-first
+    semantics for RabbitMQ. Unknown transports retain the historical AMQP
+    mapping, with a warning from :func:`_resolve_priority`, because silently
+    dropping a previously accepted priority would be a breaking change.
     """
     if raw is None:
         return None
@@ -71,8 +72,41 @@ def _coerce_priority(raw: object) -> int | None:
     if isinstance(raw, int):
         return raw if 0 <= raw <= 255 else None
     if isinstance(raw, str):
-        return _PRIORITY_LABEL_TO_INT.get(raw.strip().lower())
+        mapping = (
+            _REDIS_PRIORITY_LABEL_TO_INT if driver_type == "redis" else _AMQP_PRIORITY_LABEL_TO_INT
+        )
+        return mapping.get(raw.strip().lower())
     return None
+
+
+def _write_transport_driver_type(celery_app: Any) -> str | None:
+    """Read Kombu's configured write-transport kind without connecting."""
+    try:
+        connection = celery_app.connection_for_write()
+        transport = connection.transport
+        raw = getattr(transport, "driver_type", None)
+    except Exception:
+        return None
+    value = str(raw or "").strip().lower()
+    if "redis" in value:
+        return "redis"
+    if value in {"amqp", "pyamqp", "librabbitmq", "rabbitmq"}:
+        return "amqp"
+    return value or None
+
+
+def _resolve_priority(celery_app: Any, raw: object) -> int | None:
+    """Resolve one raw/label priority for the configured write transport."""
+    driver_type = _write_transport_driver_type(celery_app)
+    if isinstance(raw, str) and driver_type not in {"amqp", "redis"}:
+        logger.warning(
+            "z4j-celery: named priority %r on unknown transport %r uses "
+            "the historical AMQP numeric ordering; pass an explicit integer "
+            "if this transport orders priorities differently",
+            raw,
+            driver_type,
+        )
+    return _coerce_priority(raw, driver_type=driver_type)
 
 
 async def retry_task_action(
@@ -117,8 +151,6 @@ async def retry_task_action(
     except ValueError as exc:
         return CommandResult(status="failed", error=f"invalid eta: {exc}")
 
-    priority_int = _coerce_priority(priority)
-
     # The AsyncResult name/args reads and send_task are synchronous
     # result-backend + kombu broker I/O. Run them in a thread under a
     # timeout so a broker slowdown / failover cannot freeze the agent's
@@ -126,7 +158,7 @@ async def retry_task_action(
     # ping/pong). ``bulk_retry`` awaits these one at a time, so the pool
     # is never oversubscribed.
     try:
-        resolved_name, new_task_id = await offload(
+        resolved_name, new_task_id, priority_int = await offload(
             _do_retry_io,
             celery_app,
             task_id=task_id,
@@ -134,7 +166,7 @@ async def retry_task_action(
             override_args=override_args,
             override_kwargs=override_kwargs,
             eta_dt=eta_dt,
-            priority_int=priority_int,
+            priority=priority,
             timeout=_RETRY_TIMEOUT,
         )
     except OffloadTimeoutError:
@@ -166,16 +198,17 @@ def _do_retry_io(
     override_args: tuple[Any, ...] | None,
     override_kwargs: dict[str, Any] | None,
     eta_dt: Any,
-    priority_int: int | None,
-) -> tuple[str, str]:
+    priority: object,
+) -> tuple[str, str, int | None]:
     """Synchronous retry I/O: resolve name/args from the result backend
     (fallback only -- the brain-supplied ``task_name`` is authoritative,
     same contract as the other adapters) and publish via
-    ``send_task``. Returns ``(resolved_name, new_task_id)``; raises
+    ``send_task``. Returns ``(resolved_name, new_task_id, priority)``; raises
     :class:`_RetryError` for reportable failures. Runs in an executor
     thread (see the caller) so the kombu/result-backend blocking stays
     off the event loop.
     """
+    priority_int = _resolve_priority(celery_app, priority)
     async_result = celery_app.AsyncResult(task_id)
 
     name = task_name or _resolve_task_name(async_result)
@@ -212,7 +245,7 @@ def _do_retry_io(
     new_task_id = getattr(new_async, "id", None) or getattr(new_async, "task_id", None)
     if not new_task_id:
         raise _RetryError("send_task returned without a task id")
-    return name, str(new_task_id)
+    return name, str(new_task_id), priority_int
 
 
 #: Hard ceiling on the number of tasks a single ``bulk_retry``

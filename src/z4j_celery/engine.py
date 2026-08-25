@@ -647,9 +647,20 @@ class CeleryEngineAdapter:
 
             # Configuration (may be large AND may include credentialed
             # keys; allowlist-filter via ``_redact_worker_conf`` before
-            # exposing to the brain. See ``_CONF_ALLOWLIST`` docstring
-            # for the round-7 audit context.)
-            conf = inspector.conf() or {}
+            # exposing to the brain. See the ``_CONF_ALLOWLIST`` docstring
+            # for why the allowlist is a source-side allowlist and not a
+            # denylist.)
+            #
+            # ``with_defaults=True`` matters. Celery's default is False, which
+            # returns only the keys an application explicitly overrode. The
+            # settings worth warning an operator about are almost always the
+            # ones nobody set: acks_late off, prefetch 4, reject-on-worker-lost
+            # disabled, no time limits. Without defaults a stock worker reports
+            # an empty configuration and every one of those escapes review,
+            # which is the opposite of the point. The response is larger, but
+            # ``_redact_worker_conf`` cuts it to the allowlist before it
+            # leaves this process.
+            conf = inspector.conf(with_defaults=True) or {}
             for worker, cfg in conf.items():
                 result.setdefault(worker, {})["conf"] = _redact_worker_conf(cfg)
 
@@ -764,20 +775,19 @@ class CeleryEngineAdapter:
         eta: float | None = None,
         priority: int | None = None,
     ) -> CommandResult:
-        """Universal enqueue via Celery's ``app.send_task``.
+        """Enqueue through a registered task's ``apply_async`` when present.
 
-        Same primitive the brain calls for retries / bulk retries /
-        DLQ requeues - Celery's adapter therefore needs no special
-        polyfill code on the brain side.
+        Unknown local task names fall back to ``app.send_task``. Retry-family
+        actions have their own result-backend and ``send_task`` path.
         """
-        from datetime import UTC, datetime, timedelta
+        from datetime import UTC, datetime
 
         try:
             send_kwargs: dict[str, Any] = {"args": args, "kwargs": kwargs or {}}
             if queue:
                 send_kwargs["queue"] = queue
             if eta is not None:
-                send_kwargs["eta"] = datetime.now(UTC) + timedelta(seconds=eta)
+                send_kwargs["eta"] = datetime.fromtimestamp(eta, tz=UTC)
             if priority is not None:
                 send_kwargs["priority"] = priority
 
@@ -888,11 +898,9 @@ class CeleryEngineAdapter:
         override_args: tuple[Any, ...] | None = None,
         override_kwargs: dict[str, Any] | None = None,
     ) -> CommandResult:
-        # ``task_name`` is the brain-forwarded name (same contract
-        # as retry_task). Without it a default-config Celery app
-        # (``result_extended`` off) cannot resolve the name from the
-        # result backend, so the DLQ requeue failed "could not resolve
-        # task name" -- the advertised requeue-from-DLQ button was dead.
+        # Kept as a fail-closed protocol method for direct callers. This action
+        # is deliberately absent from capabilities(): generic retry cannot
+        # atomically remove a broker-specific DLQ entry or preserve its route.
         return await requeue_dead_letter_action(
             self.celery_app,
             task_id=task_id,

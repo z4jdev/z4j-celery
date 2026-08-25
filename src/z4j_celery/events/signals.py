@@ -2,7 +2,8 @@
 
 Connects ``celery.signals`` to the z4j agent's event pipeline. Every
 handler is wrapped in :func:`z4j_bare.safety.safe_boundary` so a
-failure inside z4j cannot propagate into the host's Celery worker.
+regular exception inside z4j is logged and suppressed. Process-lifecycle
+exceptions still propagate by design.
 
 Signals hooked (v1):
 
@@ -16,8 +17,10 @@ Signals hooked (v1):
 - ``worker_ready`` - worker came online (for worker-state tracking)
 - ``worker_shutdown`` - worker going offline
 
-Signal handlers must return quickly. All heavy work is deferred to
-the agent runtime's background thread via ``record_event``.
+Signal handlers build and redact each event synchronously, then hand it to the
+engine's bounded queue. Queue draining and network delivery happen in the
+agent runtime's background thread; queue pressure or a mapper/sink failure can
+drop an event.
 """
 
 from __future__ import annotations

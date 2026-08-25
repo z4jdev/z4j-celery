@@ -8,6 +8,7 @@ in a later turn, they use a real Celery app via ``pytest-celery``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -67,8 +68,9 @@ class FakeChannel:
 class FakeConnection:
     """Supports ``with celery_app.connection_for_write() as conn:``."""
 
-    def __init__(self, channel: FakeChannel) -> None:
+    def __init__(self, channel: FakeChannel, driver_type: str = "amqp") -> None:
         self.default_channel = channel
+        self.transport = SimpleNamespace(driver_type=driver_type)
 
     def __enter__(self) -> FakeConnection:
         return self
@@ -112,9 +114,10 @@ class FakeCeleryApp:
         self._async_results: dict[str, FakeAsyncResult] = {}
         self.sent_tasks: list[dict[str, Any]] = []
         self._next_id = 0
+        self.broker_driver_type = "amqp"
 
     def connection_for_write(self) -> FakeConnection:
-        return FakeConnection(self._channel)
+        return FakeConnection(self._channel, self.broker_driver_type)
 
     def AsyncResult(self, task_id: str) -> FakeAsyncResult:  # noqa: N802
         if task_id in self._async_results:
@@ -143,11 +146,20 @@ class FakeCeleryApp:
         args: tuple[Any, ...] | list[Any] = (),
         kwargs: dict[str, Any] | None = None,
         eta: Any = None,
+        queue: str | None = None,
+        priority: int | None = None,
     ) -> FakeAsyncResult:
         self._next_id += 1
         new_id = f"new-task-{self._next_id}"
         self.sent_tasks.append(
-            {"name": name, "args": list(args), "kwargs": dict(kwargs or {}), "eta": eta},
+            {
+                "name": name,
+                "args": list(args),
+                "kwargs": dict(kwargs or {}),
+                "eta": eta,
+                "queue": queue,
+                "priority": priority,
+            },
         )
         return FakeAsyncResult(task_id=new_id, name=name, args=args, kwargs=kwargs)
 

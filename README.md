@@ -1,18 +1,18 @@
 # z4j-celery
 
-[![PyPI version](https://img.shields.io/pypi/v/z4j-celery.svg?v=1.8.0)](https://pypi.org/project/z4j-celery/)
-[![Python](https://img.shields.io/pypi/pyversions/z4j-celery.svg?v=1.8.0)](https://pypi.org/project/z4j-celery/)
-[![License](https://img.shields.io/pypi/l/z4j-celery.svg?v=1.8.0)](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/z4j-celery.svg)](https://pypi.org/project/z4j-celery/)
+[![Python](https://img.shields.io/pypi/pyversions/z4j-celery.svg)](https://pypi.org/project/z4j-celery/)
+[![License](https://img.shields.io/pypi/l/z4j-celery.svg)](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE)
 
 The Celery engine adapter for [z4j](https://z4j.com).
 
-Streams every task lifecycle event from your Celery workers to the z4j
+Streams supported task lifecycle events from your Celery workers to the z4j
 brain and accepts operator control actions from the dashboard. Pair
 with z4j-celerybeat to manage periodic / cron schedules.
 
 ## Compatibility
 
-- Celery 5.2+ (no upper cap)
+- Celery 5.2.2+ (no upper cap)
 - Python 3.11+
 
 Full per-adapter matrix at <https://z4j.dev/reference/compatibility/>.
@@ -24,17 +24,19 @@ Full per-adapter matrix at <https://z4j.dev/reference/compatibility/>.
 | Task lifecycle events | submitted, started, succeeded, failed, retried, revoked |
 | Task discovery | runtime registry merge + static `tasks.py` scan |
 | Submit / retry / cancel | direct against the Celery app |
-| Bulk retry | filter-driven; re-enqueues matching tasks |
+| Bulk retry | retries brain-selected explicit task IDs individually; does not sweep the broker |
 | Purge queue | with confirm-token guard |
-| Requeue dead-letter | from the configured DLX |
-| Restart worker | broadcast pool restart, zero task loss |
+| Requeue dead-letter | unsupported: broker-specific atomic consume/ack and routing are required |
+| Restart worker | fire-and-forget `pool_restart`; requires Celery's `worker_pool_restarts` setting and operator verification |
 | Pool grow / shrink | via Celery's control API |
-| Rate limit | broker-side via Celery's control channel |
+| Rate limit | fire-and-forget Celery remote-control broadcast to the selected worker(s) |
 | Reconcile task | via the result backend |
 
-The widest feature coverage of any z4j engine adapter, Celery's rich
-remote-control surface lets z4j ship capabilities other engines can't
-match (pool restart with zero task loss, broker-side rate limiting).
+The widest feature coverage of any z4j engine adapter, Celery's remote-control
+surface provides controls other engines cannot expose. Worker-control
+broadcasts do not acknowledge execution: verify the worker state afterward.
+`pool_restart` is intended for prefork deployments; Celery's gevent and
+eventlet pools do not support it reliably.
 
 ## Install
 
@@ -57,10 +59,11 @@ pip install z4j-bare    z4j-celery z4j-celerybeat   # framework-free worker
 
 ## Reliability
 
-- No exception from the adapter ever propagates back into your Celery
-  workers or signal handlers.
-- Events buffer locally when z4j is unreachable; your workers
-  never slow down or block on network I/O.
+- Lifecycle-capture failures are isolated from Celery workers and signal
+  handlers; capture hooks make no brain network request inline.
+- The in-process event queue and SQLite outbound buffer are bounded. Queue
+  overflow drops new events and buffer pressure evicts oldest rows; both losses
+  are logged.
 
 ## Documentation
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.9.0 (2026-08-25)
+
+* Purge action and engine corrections carried with the fleet release.
+* Raise the uncapped Celery floor to 5.2.2, the first release that closes
+  CVE-2021-23727, so published metadata cannot resolve the vulnerable
+  5.2.0/5.2.1 line on a fresh install.
+* **Breaking safety correction:** The unsafe `requeue_dead_letter` capability
+  has been removed. The 1.8 implementation published a normal retry without
+  consuming or acknowledging the original broker dead-letter entry and could
+  route the copy to a different queue, so it could duplicate work. Direct calls
+  now fail closed without publishing. Use broker-specific tooling that
+  atomically consumes or acknowledges the original entry and preserves its
+  routing.
+
 ## 1.8.0 (2026-07-23)
 
 * The adapter now attests its safe by-reference retry contract to the exact agent session and requires the coordinated 1.8.0 bare/core runtime.

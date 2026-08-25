@@ -59,11 +59,10 @@ class TaskMeta:
                        with ``[REDACTED]`` in task.succeeded events.
         tags: Tags attached to every event emitted for this task.
               Surface in the dashboard's filter pills.
-        expected_duration_ms: UI displays a warning badge when a run
-                              exceeds this; the brain also emits an
-                              alert when wired up in Phase 2.
-        deadline_ms: Hard deadline. Runs exceeding this are flagged
-                     as "overran deadline" in the dashboard.
+        expected_duration_ms: Observability hint copied into emitted event
+                              data. It does not enforce a runtime limit.
+        deadline_ms: Observability hint copied into emitted event data. It
+                     does not terminate or time out the task.
         skip: If True, individual runs of this task are not reported.
               The task definition is still discovered and shown in
               the registry, so users know it exists.

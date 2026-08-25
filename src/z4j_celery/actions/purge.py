@@ -1,20 +1,20 @@
 """Purge all pending tasks from a Celery queue.
 
 DESTRUCTIVE. The brain requires admin role and a confirmation
-dialog before issuing this. Uses ``celery_app.control.purge()``
-for the default queue, or ``discard_all`` on a channel for a
-specific named queue.
+dialog before issuing this. The adapter calls the broker channel's
+``queue_purge(queue_name)`` primitive and never deletes the queue itself.
 
-Audit H13 / M-7: this action requires an explicit ``confirm_token``,
+Purging is destructive, so this action requires an explicit ``confirm_token``,
 a keyed ``HMAC(project_secret, "purge|queue|depth")`` (see
 ``z4j_core.purge_token``). The brain computes it server-side after
 fetching depth + showing the operator a preview; the agent recomputes
 locally against its own per-project secret and refuses to act if the
-token is wrong. Keying (M-7) means a party that can only observe the
+token is wrong. Keying means a party that can only observe the
 depth cannot forge or refresh a token. A pre-1.7 UNKEYED token is still
-accepted during a grace window (with a warning) for rolling upgrades.
-Closes the "compromised brain or replayed command silently nukes a
-queue with N pending messages" gap.
+accepted only when the operator explicitly enables
+``Z4J_ACCEPT_LEGACY_PURGE_TOKEN`` for a rolling upgrade. The token has no
+timestamp or nonce: it does not stop a compromised issuer, and a captured
+token remains replayable whenever the same queue has the same depth.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def _resolve_agent_secret() -> bytes | None:
     Reads ``Z4J_HMAC_SECRET`` (the value the brain returns on agent mint)
     from the environment and decodes it to the same raw bytes frame
     signing uses. Returns None when it is absent or undecodable, in which
-    case only the legacy unkeyed token can be verified (grace window).
+    case only an explicitly enabled legacy unkeyed token can be verified.
     """
     raw = os.environ.get("Z4J_HMAC_SECRET")
     if not raw:
@@ -96,13 +96,13 @@ def expected_confirm_token(
     Prefer :func:`z4j_core.purge_token.compute_purge_confirm_token`
     directly. This shim keys with the per-project ``secret`` when given
     (the real, keyed HMAC); with no secret it returns the pre-1.7
-    UNKEYED token, kept only so existing callers/tests keep working
-    during the grace window.
+    UNKEYED token, kept only for compatibility helpers and an explicitly
+    enabled rolling-upgrade window.
 
-    The token is short-lived in practice because ``queue_depth`` changes
-    constantly under load, so a captured-and-replayed command becomes
-    wrong almost immediately -- and, keyed, it cannot be recomputed for
-    the new depth by anyone lacking the project secret.
+    The token binds the queue name and observed depth but carries no expiry
+    or nonce. A captured token is valid again whenever that queue has the
+    same depth; anyone lacking the project secret cannot recompute it for a
+    different depth.
     """
     if secret:
         return compute_purge_confirm_token(
@@ -178,7 +178,7 @@ async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
         queue_name: Name of the queue to purge.
         confirm_token: HMAC of (queue_name, current_depth) computed
                        by the brain at command-issue time. Required
-                       unless ``force=True``. Audit H13.
+                       unless ``force=True``.
         force: Bypass both the depth-threshold and the confirm
                token check. Reserved for emergency scripted use.
                Logs a critical-level audit line on use.
@@ -209,7 +209,7 @@ async def purge_queue_action(  # noqa: PLR0911  guard-and-dispatch branches
                 error=(
                     "purge_queue: missing confirm_token. The brain "
                     "must compute HMAC(queue_name, current_depth) "
-                    "and include it in the command (audit H13)."
+                    "and include it in the command."
                 ),
             )
         if depth is None:

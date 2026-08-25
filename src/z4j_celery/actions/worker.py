@@ -1,8 +1,9 @@
 """Restart a Celery worker.
 
 Uses ``celery_app.control.broadcast("pool_restart")`` with the
-worker's name as the destination. Safe to call on a prefork pool;
-the worker drains in-flight tasks and respawns its pool processes.
+worker's name as the destination. This restarts the execution pool, not
+the parent worker process, and Celery applies it only when
+``worker_pool_restarts`` is enabled.
 
 Gevent and eventlet pools do not support pool_restart reliably -
 those installations should avoid this action or switch to a full

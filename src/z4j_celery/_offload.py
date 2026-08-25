@@ -1,8 +1,8 @@
 """Dedicated, bounded thread pool for Celery broker / result-backend I/O.
 
-1.7.1 (M8/M10/M11/M13): every synchronous broker call (revoke, purge,
-send_task, control.broadcast, AsyncResult reads) is offloaded HERE, not
-onto the event loop's default executor.
+Only call sites that explicitly use :func:`offload` run here. Some Celery
+submission, result-read, and control paths still call synchronous Celery
+APIs on the agent loop and can block it while the broker or backend stalls.
 
 * **Isolation.** The default executor also runs the agent's heartbeat
   providers (``asyncio.to_thread``) and ``getaddrinfo`` for WS reconnect.

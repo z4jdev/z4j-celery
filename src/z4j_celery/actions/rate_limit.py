@@ -60,10 +60,9 @@ async def rate_limit_action(
                      unintended.
 
     Returns:
-        ``success`` if the broadcast was accepted by the broker.
-        Celery's control API is fire-and-forget; the dashboard
-        should reflect the new effective rate from the next
-        heartbeat.
+        ``success`` when the local fire-and-forget broadcast call returns
+        without error. This does not confirm that any worker received or
+        applied the rate, and z4j currently has no effective-rate readback.
     """
     if not task_name:
         return CommandResult(

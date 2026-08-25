@@ -14,7 +14,6 @@ DEFAULT_CAPABILITIES: frozenset[str] = frozenset(
         "cancel_task",
         "bulk_retry",
         "purge_queue",
-        "requeue_dead_letter",
         "restart_worker",
         "pool_grow",
         "pool_shrink",

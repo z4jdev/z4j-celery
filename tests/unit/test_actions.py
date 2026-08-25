@@ -161,6 +161,48 @@ class TestRetryAction:
         assert result.status == "failed"
         assert "broker down" in (result.error or "")
 
+    async def test_named_priority_uses_amqp_higher_first_order(self, fake_app) -> None:
+        fake_app.broker_driver_type = "amqp"
+        fake_app.register_result("amqp-critical", name="myapp.tasks.work")
+        fake_app.register_result("amqp-low", name="myapp.tasks.work")
+
+        await retry_task_action(fake_app, task_id="amqp-critical", priority="critical")
+        await retry_task_action(fake_app, task_id="amqp-low", priority="low")
+
+        assert [item["priority"] for item in fake_app.sent_tasks] == [9, 0]
+
+    async def test_named_priority_uses_redis_ascending_bucket_order(self, fake_app) -> None:
+        fake_app.broker_driver_type = "redis"
+        fake_app.register_result("redis-critical", name="myapp.tasks.work")
+        fake_app.register_result("redis-low", name="myapp.tasks.work")
+
+        await retry_task_action(fake_app, task_id="redis-critical", priority="critical")
+        await retry_task_action(fake_app, task_id="redis-low", priority="low")
+
+        assert [item["priority"] for item in fake_app.sent_tasks] == [0, 9]
+
+    async def test_raw_integer_priority_is_preserved_on_redis(self, fake_app) -> None:
+        fake_app.broker_driver_type = "redis"
+        fake_app.register_result("redis-raw", name="myapp.tasks.work")
+
+        await retry_task_action(fake_app, task_id="redis-raw", priority=7)
+
+        assert fake_app.sent_tasks[-1]["priority"] == 7
+
+    def test_mapping_matches_kombu_redis_consumption_order(self) -> None:
+        import inspect
+
+        from kombu.transport.redis import Channel
+        from z4j_celery.actions.retry import _coerce_priority
+
+        # Kombu's Redis Channel checks these buckets in list order. This guard
+        # bites if upstream changes that ordering and our named mapping needs
+        # to move with it.
+        assert list(Channel.priority_steps) == [0, 3, 6, 9]
+        assert "for pri in self.priority_steps" in inspect.getsource(Channel._get)
+        assert _coerce_priority("critical", driver_type="redis") == Channel.priority_steps[0]
+        assert _coerce_priority("low", driver_type="redis") == Channel.priority_steps[-1]
+
 
 class TestBulkRetryAction:
     async def test_requires_task_ids_in_v1(self, fake_app) -> None:
@@ -278,13 +320,12 @@ class TestResolveAgentSecret:
 
 
 class TestDeadLetterAction:
-    async def test_dlq_delegates_to_retry(self, fake_app) -> None:
-        fake_app.register_result("orig", name="myapp.tasks.failing")
+    async def test_dlq_fails_closed_without_publishing(self, fake_app) -> None:
+        before = list(fake_app.sent_tasks)
         result = await requeue_dead_letter_action(fake_app, task_id="orig")
-        assert result.status == "success"
-        assert result.result is not None
-        assert result.result["source"] == "dlq"
-        assert "new_task_id" in result.result
+        assert result.status == "failed"
+        assert "cannot safely requeue" in result.error
+        assert fake_app.sent_tasks == before
 
 
 class TestRestartWorkerAction:

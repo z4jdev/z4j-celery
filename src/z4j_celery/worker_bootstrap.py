@@ -161,16 +161,29 @@ def _is_celery_worker_invocation() -> bool:  # noqa: PLR0911  argv dispatch
 def _argv_has_worker_subcommand(remaining: list[str]) -> bool:
     """Return True if the first non-flag token in ``remaining`` is ``worker``.
 
-    Skips ``-A app`` / ``--app=app`` and any other dash-prefixed
-    flags so ``celery -A myapp.celery worker -l info`` and
-    ``celery worker`` both return True.
+    Skip Celery's built-in global options, including the value following
+    ``-A``, ``-b``, ``--result-backend``, ``--loader``, ``--config``, and
+    ``--workdir``. Attached values such as ``--broker=...`` and flags such
+    as ``--quiet`` are skipped as single tokens.
     """
-    it = iter(remaining)
-    for arg in it:
-        if arg in ("-A", "--app"):
-            next(it, None)
+    options_with_separate_value = {
+        "-A",
+        "--app",
+        "-b",
+        "--broker",
+        "--result-backend",
+        "--loader",
+        "--config",
+        "--workdir",
+    }
+    index = 0
+    while index < len(remaining):
+        arg = remaining[index]
+        if arg in options_with_separate_value:
+            index += 2
             continue
         if arg.startswith("-"):
+            index += 1
             continue
         return arg == "worker"
     return False
@@ -296,14 +309,10 @@ def _on_worker_ready(*, sender: Any = None, **_: Any) -> None:
         # accepts a class and instantiates it with the resolved Config.
         # See z4j-bare 1.0.5 for the kwarg.
         framework_cls = _resolve_framework_adapter(celery_app)
-        # ``install_agent`` reads brain_url / token / project_id /
-        # hmac_secret from env vars when not passed explicitly - but
-        # ``Z4J_DEV_MODE`` is intentionally NOT env-read (security
-        # audit C3 - the kwarg is the only trusted source, because a
-        # compromised env var must not silently disable the
-        # ``wss://`` / signed-envelope invariants). The worker opts
-        # in explicitly when the env var is truthy, and a Python
-        # reviewer sees the decision in git.
+        # Auto-bootstrap treats a truthy ``Z4J_DEV_MODE`` environment value
+        # as an explicit opt-in and forwards it to install_agent. This
+        # relaxes the ``wss://`` requirement, so use it only on a trusted
+        # local network.
         import os as _os
 
         dev_mode = _os.environ.get("Z4J_DEV_MODE", "").lower() in (

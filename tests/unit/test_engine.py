@@ -68,7 +68,7 @@ class TestCapabilities:
         assert "cancel_task" in caps
         assert "bulk_retry" in caps
         assert "purge_queue" in caps
-        assert "requeue_dead_letter" in caps
+        assert "requeue_dead_letter" not in caps
         assert "restart_worker" in caps
 
 
@@ -121,6 +121,21 @@ def static_only():
 
 
 class TestActions:
+    async def test_submit_task_treats_eta_as_absolute_timestamp(
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        target = datetime.now(UTC) + timedelta(minutes=5)
+        result = await adapter.submit_task(
+            "myapp.tasks.delayed",
+            eta=target.timestamp(),
+        )
+        assert result.status == "success"
+        assert fake_app.sent_tasks[-1]["eta"] == target
+
     async def test_retry_task(
         self,
         adapter: CeleryEngineAdapter,
@@ -171,9 +186,11 @@ class TestActions:
         adapter: CeleryEngineAdapter,
         fake_app,
     ) -> None:
-        fake_app.register_result("dead", name="t.failing")
+        before = list(fake_app.sent_tasks)
         result = await adapter.requeue_dead_letter("dead")
-        assert result.status == "success"
+        assert result.status == "failed"
+        assert "cannot safely requeue" in result.error
+        assert fake_app.sent_tasks == before
 
     async def test_restart_worker(
         self,
@@ -238,7 +255,11 @@ class _FakeInspector:
     def registered(self) -> dict[str, object]:
         return {}
 
-    def conf(self) -> dict[str, dict[str, object]]:
+    def conf(self, with_defaults: bool = False) -> dict[str, dict[str, object]]:
+        # The adapter asks for defaults on purpose: the settings worth
+        # warning about are the ones nobody set. Recording the argument
+        # keeps this double honest about the call it received.
+        self.conf_called_with_defaults = with_defaults
         return self._conf_payload
 
 
@@ -540,3 +561,54 @@ class TestCacheInstanceScopingR8L2:
             " regression: adapter_b's last-stats timestamp leaked "
             "from adapter_a (class-level mutable shared)."
         )
+
+
+class TestWorkerConfAsksForDefaults:
+    """The lint rules exist for settings nobody set, so defaults must arrive.
+
+    Celery's ``Inspect.conf()`` defaults to ``with_defaults=False``, which
+    returns only what an application explicitly overrode. A stock worker then
+    reports an empty configuration, and every setting the worker-configuration
+    lint exists to warn about (acks_late off, prefetch 4, reject-on-worker-lost
+    disabled, no time limits) is invisible to it.
+    """
+
+    def test_the_adapter_requests_defaults(self, fake_app) -> None:
+        inspector = _FakeInspector({"w1": {"task_serializer": "json"}})
+        fake_app.control = _ControlWithInspect(inspector)
+        adapter = CeleryEngineAdapter(celery_app=fake_app)
+
+        adapter.get_worker_details(hostname="w1")
+
+        assert inspector.conf_called_with_defaults is True, (
+            "without defaults a stock worker reports {} and the lint sees nothing"
+        )
+
+    def test_a_default_valued_setting_survives_the_allowlist(self, fake_app) -> None:
+        """The dangerous values are falsy, so a filter must not drop them.
+
+        ``task_acks_late=False`` and ``task_reject_on_worker_lost=False`` are
+        precisely the states worth flagging. A redaction step written with a
+        truthiness test would silently discard them and report a clean worker.
+        """
+        inspector = _FakeInspector(
+            {
+                "w1": {
+                    "task_acks_late": False,
+                    "task_reject_on_worker_lost": False,
+                    "worker_prefetch_multiplier": 4,
+                    "task_time_limit": None,
+                    "broker_url": "redis://:secret@host/0",
+                },
+            },
+        )
+        fake_app.control = _ControlWithInspect(inspector)
+        adapter = CeleryEngineAdapter(celery_app=fake_app)
+
+        conf = adapter.get_worker_details(hostname="w1")["w1"]["conf"]
+
+        assert conf["task_acks_late"] is False
+        assert conf["task_reject_on_worker_lost"] is False
+        assert conf["worker_prefetch_multiplier"] == 4
+        assert "task_time_limit" in conf
+        assert "broker_url" not in conf
