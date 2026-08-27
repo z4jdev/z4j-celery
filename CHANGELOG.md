@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.1 (2026-08-26)
+
+* Carried with the coordinated fleet release. No adapter behaviour changed.
+
 ## 1.9.0 (2026-08-25)
 
 * Purge action and engine corrections carried with the fleet release.
