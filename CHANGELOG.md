@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.0 (2026-09-10)
+
+* Keep task submission off the agent event loop on the dedicated broker pool.
+  A publish that exceeds the bounded wait is explicitly indeterminate because
+  the broker operation can still complete; it is never automatically retried.
+
+* Align runtime version metadata and sibling dependency floors with the coordinated 1.11.0 release.
+
 ## 1.10.0 (2026-08-28)
 
 * Carried with the coordinated fleet release. No behaviour changed.

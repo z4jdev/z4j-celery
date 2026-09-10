@@ -19,6 +19,7 @@ import asyncio
 import inspect
 import logging
 import os
+import threading
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from z4j_core.models import (
 from z4j_core.redaction.engine import RedactionEngine
 from z4j_core.version import PROTOCOL_VERSION
 
+from z4j_celery._offload import OffloadTimeoutError, indeterminate_timeout_result, offload
 from z4j_celery.actions import (
     bulk_retry_action,
     cancel_task_action,
@@ -51,6 +53,9 @@ from z4j_celery.discovery import discover_runtime, discover_static, merge_discov
 from z4j_celery.events.signals import CelerySignalHooks
 
 logger = logging.getLogger("z4j.adapter.celery.engine")
+
+# Bound the wait without claiming that an in-flight broker publish was cancelled.
+_SUBMIT_TIMEOUT = 10.0
 
 _ENGINE_NAME = "celery"
 
@@ -153,6 +158,9 @@ class CeleryEngineAdapter:
         # heartbeat's health refresh overrun its 5s provider cap.
         self.worker_hostname = worker_hostname
         self._event_queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=10_000)
+        self._event_loss_lock = threading.Lock()
+        self._event_loss_pid = os.getpid()
+        self._dropped_event_count = 0
         self._signal_hooks: CelerySignalHooks | None = None
         self._broker_monitor: Any = None
         # Registry-delta queue, fed by the optional dev-mode
@@ -322,6 +330,27 @@ class CeleryEngineAdapter:
         except Exception:
             return "prefork"
 
+    @property
+    def dropped_event_count(self) -> int:
+        """Cumulative queue overflow loss for this adapter instance; no broker I/O."""
+        self._reset_inherited_loss_counter()
+        with self._event_loss_lock:
+            return self._dropped_event_count
+
+    def _reset_inherited_loss_counter(self) -> None:
+        # post_fork can reuse the adapter object. Never acquire a lock held
+        # by a vanished parent thread or attribute its drops to the child.
+        pid = os.getpid()
+        if self._event_loss_pid != pid:
+            self._event_loss_lock = threading.Lock()
+            self._dropped_event_count = 0
+            self._event_loss_pid = pid
+
+    def _record_event_drop(self) -> None:
+        self._reset_inherited_loss_counter()
+        with self._event_loss_lock:
+            self._dropped_event_count = min(self._dropped_event_count + 1, 2**53 - 1)
+
     def _enqueue_event(self, event: Event) -> None:
         """Internal helper - invoked on the runtime loop thread.
 
@@ -335,6 +364,7 @@ class CeleryEngineAdapter:
             except asyncio.QueueFull:
                 try:
                     dropped = self._event_queue.get_nowait()
+                    self._record_event_drop()
                     # stdlib logger: %-format, NOT structlog kwargs (a
                     # ``dropped_kind=`` kwarg raises TypeError on EVERY
                     # full-queue event -- the soak/endurance path). B16.
@@ -345,6 +375,7 @@ class CeleryEngineAdapter:
                 except asyncio.QueueEmpty:
                     pass
         # All retries exhausted - log and drop the new event.
+        self._record_event_drop()
         logger.error(
             "z4j celery: failed to enqueue event after retries (kind=%s)",
             getattr(event, "kind", "?"),
@@ -782,7 +813,7 @@ class CeleryEngineAdapter:
         """
         from datetime import UTC, datetime
 
-        try:
+        def _submit() -> Any:
             send_kwargs: dict[str, Any] = {"args": args, "kwargs": kwargs or {}}
             if queue:
                 send_kwargs["queue"] = queue
@@ -815,7 +846,18 @@ class CeleryEngineAdapter:
                 result = tasks[name].apply_async(**send_kwargs)
             else:
                 result = self.celery_app.send_task(name, **send_kwargs)
-            new_id = getattr(result, "id", None) or getattr(result, "task_id", None)
+            return getattr(result, "id", None) or getattr(result, "task_id", None)
+
+        try:
+            # Publishing may block on the broker. Keep it off the agent's loop
+            # and its heartbeat executor, just like the other broker actions.
+            new_id = await offload(_submit, timeout=_SUBMIT_TIMEOUT)
+        except OffloadTimeoutError:
+            return indeterminate_timeout_result(
+                "celery.submit_task",
+                _SUBMIT_TIMEOUT,
+                hint="the task may still be enqueued",
+            )
         except Exception as exc:
             return CommandResult(status="failed", error=str(exc))
         return CommandResult(
