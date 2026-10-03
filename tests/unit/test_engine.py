@@ -43,6 +43,7 @@ class TestProtocolConformance:
             "bulk_retry",
             "purge_queue",
             "requeue_dead_letter",
+            "list_dead_letters",
             "restart_worker",
         ],
     )
@@ -612,3 +613,23 @@ class TestWorkerConfAsksForDefaults:
         assert conf["worker_prefetch_multiplier"] == 4
         assert "task_time_limit" in conf
         assert "broker_url" not in conf
+
+
+class TestDeadLetterListingRefused:
+    """Celery has no dead-letter store: the capability is absent and a direct
+    call fails closed without publishing, mirroring requeue_dead_letter."""
+
+    def test_capability_absent(self, adapter: CeleryEngineAdapter) -> None:
+        assert "list_dead_letters" not in adapter.capabilities()
+
+    async def test_list_dead_letters_raises_adapter_error(
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
+    ) -> None:
+        from z4j_core.errors import AdapterError
+
+        before = list(fake_app.sent_tasks)
+        with pytest.raises(AdapterError, match="cannot list dead letters"):
+            await adapter.list_dead_letters("celery", limit=10)
+        assert fake_app.sent_tasks == before

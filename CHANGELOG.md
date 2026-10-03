@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.0 (2026-10-03)
+
+* Implement `list_dead_letters` as a fail-closed refusal: Celery has no
+  first-class dead-letter store (user-defined DLQ routing is broker-specific),
+  so the `list_dead_letters` capability stays absent, the agent dispatcher
+  never reaches the method, and a direct call raises `AdapterError` without
+  touching the broker. This is the same posture as `requeue_dead_letter`.
+
 ## 1.11.0 (2026-09-10)
 
 * Keep task submission off the agent event loop on the dedicated broker pool.

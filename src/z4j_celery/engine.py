@@ -24,9 +24,10 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
-from z4j_core.errors import NotFoundError
+from z4j_core.errors import AdapterError, NotFoundError
 from z4j_core.models import (
     CommandResult,
+    DeadLetterPage,
     DiscoveryHints,
     Event,
     Queue,
@@ -949,6 +950,23 @@ class CeleryEngineAdapter:
             task_name=task_name,
             override_args=override_args,
             override_kwargs=override_kwargs,
+        )
+
+    async def list_dead_letters(
+        self,
+        queue: str | None = None,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> DeadLetterPage:
+        # Same fail-closed posture as requeue_dead_letter: Celery has no
+        # first-class dead-letter store, so ``list_dead_letters`` is absent
+        # from capabilities() and a direct call refuses without touching the
+        # broker.
+        del queue, limit, cursor
+        raise AdapterError(
+            "z4j-celery cannot list dead letters: Celery has no first-class "
+            "dead-letter store (user-defined DLQ routing is broker-specific)",
         )
 
     async def restart_worker(self, worker_id: str) -> CommandResult:

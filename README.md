@@ -15,7 +15,7 @@ with z4j-celerybeat to manage periodic / cron schedules.
 - Celery 5.2.2+ (no upper cap)
 - Python 3.11+
 
-Full per-adapter matrix at <https://z4j.dev/reference/compatibility/>.
+Full per-adapter matrix at <https://docs.z4j.com/reference/compatibility/>.
 
 ## What it ships
 
@@ -67,7 +67,7 @@ pip install z4j-bare    z4j-celery z4j-celerybeat   # framework-free worker
 
 ## Documentation
 
-Full docs at [z4j.dev/engines/celery/](https://z4j.dev/engines/celery/).
+Full docs at [docs.z4j.com/engines/celery/](https://docs.z4j.com/engines/celery/).
 
 ## License
 
@@ -76,7 +76,7 @@ Apache-2.0, see [LICENSE](LICENSE).
 ## Links
 
 - Homepage: https://z4j.com
-- Documentation: https://z4j.dev
+- Documentation: https://docs.z4j.com
 - PyPI: https://pypi.org/project/z4j-celery/
 - Issues: https://github.com/z4jdev/z4j-celery/issues
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
