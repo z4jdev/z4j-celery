@@ -15,7 +15,8 @@ policy, and published advisories are maintained in the
 
 This adapter runs inside Celery workers with their broker and result-backend
 access. An authenticated brain can invoke submit, retry, cancel, bulk retry,
-purge, pool, restart, and rate-limit controls. Task-id/name and
+purge, pool grow and shrink, consumer add and cancel, restart, and rate-limit
+controls. Task-id/name and
 argument validation, cross-project selection, confirm tokens, broker event
 mapping, and fire-and-forget control semantics are package-specific security
 surfaces; transport, redaction, and authorization policy remain owned by

@@ -342,3 +342,23 @@ class TestRestartWorkerAction:
         fake_app.control.broadcast = boom  # type: ignore[method-assign]
         result = await restart_worker_action(fake_app, worker_name="celery@w1")
         assert result.status == "failed"
+
+
+async def test_retry_resolves_display_placeholder_from_extended_backend(fake_app):
+    fake_app.register_result("late-event", name="jobs.real", args=(1,), kwargs={})
+    result = await retry_task_action(fake_app, task_id="late-event", task_name="<unknown:late-eve>")
+    assert result.status == "success"
+    assert result.result["task_name"] == "jobs.real"
+    assert fake_app.sent_tasks[0]["name"] == "jobs.real"
+
+
+async def test_retry_refuses_unknown_placeholder_without_backend_name(fake_app):
+    result = await retry_task_action(
+        fake_app,
+        task_id="missing",
+        task_name="<unknown:missing>",
+        override_args=(),
+        override_kwargs={},
+    )
+    assert result.status == "failed"
+    assert fake_app.sent_tasks == []

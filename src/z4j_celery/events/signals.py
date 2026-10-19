@@ -26,7 +26,9 @@ drop an event.
 from __future__ import annotations
 
 import logging
+import traceback as traceback_module
 from collections.abc import Callable
+from types import TracebackType
 from typing import Any
 
 from z4j_bare.safety import safe_boundary
@@ -236,10 +238,16 @@ class CelerySignalHooks:
         if exception is None:
             return
         tb_str = None
-        if traceback is not None:
-            tb_str = str(traceback)
-        elif einfo is not None:
-            tb_str = getattr(einfo, "traceback", None) or str(einfo)
+        if einfo is not None and isinstance(getattr(einfo, "traceback", None), str):
+            tb_str = einfo.traceback
+        elif isinstance(traceback, TracebackType):
+            tb_str = "".join(
+                traceback_module.format_exception(type(exception), exception, traceback)
+            )
+        elif isinstance(traceback, str):
+            tb_str = traceback
+        elif exception.__traceback__ is not None:
+            tb_str = "".join(traceback_module.format_exception(exception))
         event = build_task_failed_event(
             redaction=self.redaction,
             task_id=str(task_id or ""),

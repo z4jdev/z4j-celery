@@ -8,8 +8,9 @@ The key property of this decorator is that it is **pure metadata**.
 It attaches a ``__z4j_meta__`` attribute to the decorated function
 and returns the function unchanged. It does not wrap the function.
 It does not change its signature. It does not affect Celery
-behavior in any way. If the user uninstalls z4j entirely, every
-``@z4j_meta`` call becomes a no-op.
+behavior in any way. Before uninstalling ``z4j-celery``, remove its
+import and these decorators or provide an explicit application fallback;
+the import still requires the package to be installed.
 
 Example::
 

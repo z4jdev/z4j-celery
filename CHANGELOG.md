@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.13.0 (2026-10-19)
+
+- Preserve useful failure details and safe retry task names across out-of-order events and reject unresolved task identities.
+
 ## 1.12.0 (2026-10-03)
 
 * Implement `list_dead_letters` as a fail-closed refusal: Celery has no

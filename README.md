@@ -21,7 +21,7 @@ Full per-adapter matrix at <https://docs.z4j.com/reference/compatibility/>.
 
 | Capability | Notes |
 |---|---|
-| Task lifecycle events | submitted, started, succeeded, failed, retried, revoked |
+| Task lifecycle events | received, started, succeeded, failed, retried, revoked |
 | Task discovery | runtime registry merge + static `tasks.py` scan |
 | Submit / retry / cancel | direct against the Celery app |
 | Bulk retry | retries brain-selected explicit task IDs individually; does not sweep the broker |
@@ -57,13 +57,18 @@ pip install z4j-bare    z4j-celery z4j-celerybeat   # framework-free worker
 
 - [`z4j-celerybeat`](https://github.com/z4jdev/z4j-celerybeat), schedule adapter for Celery Beat / django-celery-beat
 
+## Retry prerequisites
+
+Retry uses original arguments from Celery's result backend when available. Enable `result_extended=True` (`CELERY_RESULT_EXTENDED=True` with Django's `CELERY` namespace) to store them, and configure a result backend. Those original values are stored outside z4j's redaction layer; apply the backend's access and retention controls. If arguments are unavailable, provide both `args` and `kwargs` explicitly. The adapter refuses to replay a task using incomplete or redacted arguments.
+
 ## Reliability
 
 - Lifecycle-capture failures are isolated from Celery workers and signal
   handlers; capture hooks make no brain network request inline.
-- The in-process event queue and SQLite outbound buffer are bounded. Queue
-  overflow drops new events and buffer pressure evicts oldest rows; both losses
-  are logged.
+- The in-process event queue and SQLite outbound buffer are bounded. A full
+  queue evicts its oldest queued event to admit the new one, up to three
+  times. Queue overflow drops new events only if that cannot make room.
+  Buffer pressure evicts oldest rows. Every loss is logged.
 
 ## Documentation
 
@@ -71,7 +76,7 @@ Full docs at [docs.z4j.com/engines/celery/](https://docs.z4j.com/engines/celery/
 
 ## License
 
-Apache-2.0, see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](https://github.com/z4jdev/z4j-celery/blob/main/LICENSE).
 
 ## Links
 
@@ -79,5 +84,5 @@ Apache-2.0, see [LICENSE](LICENSE).
 - Documentation: https://docs.z4j.com
 - PyPI: https://pypi.org/project/z4j-celery/
 - Issues: https://github.com/z4jdev/z4j-celery/issues
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Security: security@z4j.com (see [SECURITY.md](SECURITY.md))
+- Changelog: [CHANGELOG.md](https://github.com/z4jdev/z4j-celery/blob/main/CHANGELOG.md)
+- Security: security@z4j.com (see [SECURITY.md](https://github.com/z4jdev/z4j-celery/blob/main/SECURITY.md))

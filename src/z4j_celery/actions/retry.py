@@ -211,8 +211,15 @@ def _do_retry_io(
     priority_int = _resolve_priority(celery_app, priority)
     async_result = celery_app.AsyncResult(task_id)
 
-    name = task_name or _resolve_task_name(async_result)
-    if not name:
+    # A display placeholder is not routing authority. Older Brain versions
+    # may retain one when terminal events arrive before task-received.
+    supplied_name = (
+        task_name
+        if task_name and not task_name.startswith("<unknown") and task_name != "unknown"
+        else None
+    )
+    name = supplied_name or _resolve_task_name(async_result)
+    if not name or name.startswith("<unknown") or name == "unknown":
         # result_extended is off by default, so a default-config Celery
         # app can never resolve the name from the backend -- which is why
         # the brain-supplied name is authoritative.

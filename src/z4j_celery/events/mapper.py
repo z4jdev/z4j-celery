@@ -313,7 +313,8 @@ def build_task_failed_event(
     redaction: RedactionEngine,
     task_id: str,
     task: Any,
-    exception: BaseException,
+    exception: BaseException | str,
+    exception_type: str | None = None,
     traceback: str | None = None,
     worker: str | None = None,
     queue: str | None = None,
@@ -345,7 +346,7 @@ def build_task_failed_event(
         worker=worker,
         meta=meta,
         extra={
-            "exception": type(exception).__name__,
+            "exception": exception_type or type(exception).__name__,
             "exception_message": redaction.scrub(str(exception)),
             "traceback": traceback_scrubbed,
         },

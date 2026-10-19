@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import logging
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -199,9 +200,10 @@ class CeleryBrokerEventsMonitor:
             # prior ``no_ack=True`` consumer dropped any event
             # whose handler raised, so a transient sink failure
             # silently lost a window of task lifecycle events.
-            # We now use explicit ack-after-success: at-least-once
-            # delivery, with the brain's ``event_id`` UNIQUE
-            # constraint dedup'ing any retries.
+            # We use explicit acknowledgement after handler dispatch. Broker
+            # redelivery can be mapped to a fresh event_id and therefore can
+            # produce duplicate rows; only retries of the same already-mapped
+            # z4j event preserve the ID used by brain-side deduplication.
             # On handler failure, ACK + drop + counter (poison-
             # message dead-letter pattern); do NOT requeue + re-raise.
             # A requeue-then-raise path on a malformed event would
@@ -209,12 +211,10 @@ class CeleryBrokerEventsMonitor:
             # host whenever a poisoned event hit a handler that the
             # safe_boundary wrapper didn't cover.
             #
-            # Brain-side dedup on event_id makes the at-least-once
-            # property already weaker than ideal in the presence of
-            # safe_boundary swallow on each handler, so requeue-and-
-            # raise would only buy us a forever-loop on poisoned
-            # data. Instead: ack the message (drops it from the
-            # broker), increment a poison counter, log loudly.
+            # Handlers may also absorb failures at their safe boundary. This
+            # path therefore does not guarantee durable end-to-end delivery.
+            # For an exception reaching this callback, acknowledge the message
+            # (drop it from the broker), increment a poison counter and log.
             # Operators see "N poisoned events dropped" instead of
             # CPU pegged.
             try:
@@ -242,8 +242,8 @@ class CeleryBrokerEventsMonitor:
                     message.ack()
                 return
             # Ack failure (broker disconnect mid-handler) is tolerated:
-            # the broker will re-deliver on reconnect; the brain's
-            # event_id dedup absorbs the duplicate.
+            # the broker may redeliver on reconnect. Mapping it again assigns
+            # new event IDs, so duplicate ingestion is possible.
             with contextlib.suppress(Exception):
                 message.ack()
 
@@ -260,8 +260,8 @@ class CeleryBrokerEventsMonitor:
                         # events on any handler exception). Now
                         # ``no_ack=False`` so the broker holds the
                         # message until ``_dispatch`` ack's it
-                        # explicitly. Brain dedup on ``event_id``
-                        # absorbs any redeliveries.
+                        # explicitly. Broker redelivery can still produce a
+                        # newly mapped event with a different event_id.
                         no_ack=False,
                     )
                     logger.info(
@@ -374,12 +374,17 @@ class CeleryBrokerEventsMonitor:
     @safe_boundary
     def _on_failed(self, event: dict[str, Any]) -> None:
         task_id = event.get("uuid", "")
-        exc_str = event.get("exception", "Unknown error")
+        exc_str = str(event.get("exception") or "Unknown error")
+        # Celery sends a representation, not an exception object. Read only
+        # its bounded class-name prefix; never evaluate or import broker data.
+        match = re.match(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\(", exc_str[:256])
+        exception_type = match.group(1).rsplit(".", 1)[-1] if match else "Exception"
         ev = build_task_failed_event(
             redaction=self._redaction,
             task_id=task_id,
             task=self._resolve_name(event),
-            exception=RuntimeError(exc_str),
+            exception=exc_str,
+            exception_type=exception_type,
             traceback=event.get("traceback"),
             worker=event.get("hostname"),
         )
