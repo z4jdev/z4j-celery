@@ -237,3 +237,43 @@ class TestTracebackTruncation:
             traceback=huge_tb,
         )
         assert "[... traceback truncated ...]" in event.data["traceback"]
+
+    def test_long_traceback_keeps_its_tail(self, redaction: RedactionEngine) -> None:
+        # A Python traceback ends with the innermost frame and the exception
+        # line; a cut traceback must keep those, not the outermost frames.
+        task = _fake_task("myapp.tasks.fail")
+        frames = "".join(
+            f'  File "/app/mod{i}.py", line {i}, in outer_{i}\n    call()\n' for i in range(200)
+        )
+        huge_tb = (
+            "Traceback (most recent call last):\n"
+            + frames
+            + '  File "/app/deep.py", line 7, in innermost\n'
+            + "ValueError: the real cause\n"
+        )
+        assert len(huge_tb) > 4096
+        event = build_task_failed_event(
+            redaction=redaction,
+            task_id="abc",
+            task=task,
+            exception=ValueError("the real cause"),
+            traceback=huge_tb,
+        )
+        tb = event.data["traceback"]
+        assert tb.startswith("[... traceback truncated ...]\n")
+        assert tb.endswith("ValueError: the real cause\n")
+        assert "in innermost" in tb
+        assert "Traceback (most recent call last)" not in tb
+        assert len(tb) == len("[... traceback truncated ...]\n") + 4096
+
+    def test_short_traceback_is_untouched(self, redaction: RedactionEngine) -> None:
+        task = _fake_task("myapp.tasks.fail")
+        tb = "Traceback (most recent call last):\nValueError: x\n"
+        event = build_task_failed_event(
+            redaction=redaction,
+            task_id="abc",
+            task=task,
+            exception=ValueError("x"),
+            traceback=tb,
+        )
+        assert event.data["traceback"] == tb

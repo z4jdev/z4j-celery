@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.2 (2026-10-29)
+
+- A long traceback keeps its last 4096 characters (2000 in a reconcile
+  result), where the innermost frames and the exception line are, instead of
+  its first; a marker at the front shows where it was cut.
+
 ## 1.13.1 (2026-10-28)
 
 - Fix a prefork worker that stopped taking tasks for good once its pool

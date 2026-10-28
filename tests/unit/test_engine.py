@@ -227,6 +227,28 @@ class TestEventQueue:
         assert adapter._event_queue.qsize() == 1
 
 
+class TestReconcileTraceback:
+    async def test_reconcile_keeps_the_end_of_a_long_traceback(
+        self,
+        adapter: CeleryEngineAdapter,
+        fake_app,
+    ) -> None:
+        fake_app.register_result("t-1", name="myapp.tasks.fail")
+        res = fake_app.AsyncResult("t-1")
+        res.state = "FAILURE"
+        res.date_done = None
+        res.traceback = (
+            "Traceback (most recent call last):\n"
+            + '  File "/app/outer.py", line 1, in outer\n' * 200
+            + "KeyError: 'the real cause'\n"
+        )
+        result = await adapter.reconcile_task("t-1")
+        exception = result.result["exception"]
+        assert exception.startswith("[... traceback truncated ...]\n")
+        assert exception.endswith("KeyError: 'the real cause'\n")
+        assert "Traceback (most recent call last)" not in exception
+
+
 # ---------------------------------------------------------------------------
 # Round-7 audit: worker_conf credential leak via inspector.conf()
 # ---------------------------------------------------------------------------

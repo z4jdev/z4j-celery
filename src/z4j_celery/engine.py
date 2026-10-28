@@ -52,6 +52,7 @@ from z4j_celery.actions import (
 )
 from z4j_celery.capabilities import DEFAULT_CAPABILITIES
 from z4j_celery.discovery import discover_runtime, discover_static, merge_discoveries
+from z4j_celery.events.mapper import traceback_tail
 from z4j_celery.events.signals import CelerySignalHooks
 
 logger = logging.getLogger("z4j.adapter.celery.engine")
@@ -814,7 +815,7 @@ class CeleryEngineAdapter:
                 try:
                     traceback = res.traceback
                     if traceback:
-                        exc_info = str(traceback)[:2000]
+                        exc_info = traceback_tail(str(traceback), 2000)
                 except Exception:  # noqa: S110  best-effort traceback extraction
                     pass
         except Exception as exc:

@@ -25,6 +25,25 @@ from z4j_celery.meta import TaskMeta, get_meta
 
 _ENGINE = "celery"
 
+#: Longest traceback a failure event carries, in characters.
+TRACEBACK_MAX_CHARS = 4096
+
+#: Prefix of a traceback that was cut to its tail.
+TRACEBACK_TRUNCATED_MARKER = "[... traceback truncated ...]\n"
+
+
+def traceback_tail(traceback: str | None, limit: int) -> str | None:
+    """Return ``traceback`` cut to its last ``limit`` characters.
+
+    A Python traceback lists the innermost call and the exception line
+    last, so the tail is the part worth keeping. A cut traceback starts
+    with :data:`TRACEBACK_TRUNCATED_MARKER`; the result never exceeds
+    ``limit`` characters plus the marker.
+    """
+    if traceback is None or len(traceback) <= limit:
+        return traceback
+    return TRACEBACK_TRUNCATED_MARKER + traceback[-limit:]
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -331,8 +350,7 @@ def build_task_failed_event(
     # per-field size limit. The redaction engine takes care of its
     # own truncation inside ``scrub``, but we prefer a shorter one
     # for tracebacks since they can be very long.
-    if traceback is not None and len(traceback) > 4096:
-        traceback = traceback[:4096] + "\n[... traceback truncated ...]"
+    traceback = traceback_tail(traceback, TRACEBACK_MAX_CHARS)
 
     # Tracebacks routinely contain repr() of locals - including any
     # secret that lived in the failing function's frame. Redact the
@@ -449,10 +467,13 @@ def build_task_revoked_event(
 
 
 __all__ = [
+    "TRACEBACK_MAX_CHARS",
+    "TRACEBACK_TRUNCATED_MARKER",
     "build_task_failed_event",
     "build_task_received_event",
     "build_task_retried_event",
     "build_task_revoked_event",
     "build_task_started_event",
     "build_task_succeeded_event",
+    "traceback_tail",
 ]
