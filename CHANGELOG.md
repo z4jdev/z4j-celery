@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.13.1 (2026-10-28)
+
+- Fix a prefork worker that stopped taking tasks for good once its pool
+  recycled children (`worker_max_tasks_per_child`,
+  `worker_max_memory_per_child`, a crash or a time-limit kill). Each
+  replacement child closes Celery's shared broker pool before it reports
+  ready. On Redis, a pooled channel that the agent's health refresh
+  (`control.inspect`) had left waiting on a BRPOP made that close read from
+  the socket the child shares with the main process. After one such reply
+  wait, every replacement blocked there and logged "Timed out waiting for UP
+  message" until the worker was restarted. Reply waits now run on a
+  connection the agent opens and closes itself, with a 10 second Redis read
+  timeout unless `broker_transport_options` sets `socket_timeout`, so a
+  half-open connection can no longer park the health-refresh thread forever.
+  The worker log notes at startup when the pool recycles children.
+
 ## 1.13.0 (2026-10-19)
 
 - Preserve useful failure details and safe retry task names across out-of-order events and reject unresolved task identities.

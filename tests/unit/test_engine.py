@@ -276,6 +276,7 @@ class _ControlWithInspect:
         *,
         destination: list[str] | None = None,
         timeout: float | None = None,
+        connection: object = None,
     ) -> _FakeInspector:
         return self._inspector
 

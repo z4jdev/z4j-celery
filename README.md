@@ -70,6 +70,32 @@ Retry uses original arguments from Celery's result backend when available. Enabl
   times. Queue overflow drops new events only if that cannot make room.
   Buffer pressure evicts oldest rows. Every loss is logged.
 
+## Prefork pools that recycle children
+
+The in-worker agent starts on `worker_ready`, after the pool forks its first
+children. A pool that recycles children (`--max-tasks-per-child`,
+`--max-memory-per-child`, or a child lost to a crash or a time limit) keeps
+forking replacements while the agent's threads run in the worker's main
+process. Before a replacement reports ready, kombu closes every connection in
+Celery's shared broker pool, and on Redis, closing a channel that is still
+waiting on a BRPOP reads from the socket the child shares with the main
+process.
+
+Earlier releases of the agent waited for `control.inspect` replies on a pooled
+connection during the periodic health refresh. One reply wait that timed
+out, or whose reply a replacement child read first, left the pool in that
+state. From then on every replacement blocked before reporting ready: the
+worker log fills with `Timed out waiting for UP message` and the worker takes
+no tasks until it is restarted. The agent now waits for broker replies only on
+connections it opens and closes itself, with a 10 second Redis read timeout
+unless `broker_transport_options` sets `socket_timeout`. The worker log notes
+at startup when the pool recycles children.
+
+If replacement children still time out with z4j installed, set
+`Z4J_DISABLED=1` on the worker to rule the agent out, and capture
+`py-spy dump --pid <pid>` of a child that is waiting to come up (raise
+Celery's `worker_proc_alive_timeout` so it lives long enough to inspect).
+
 ## Documentation
 
 Full docs at [docs.z4j.com/engines/celery/](https://docs.z4j.com/engines/celery/).

@@ -16,11 +16,12 @@ it to the agent runtime.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import os
 import threading
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,52 @@ def _redact_worker_conf(cfg: Any) -> dict[str, Any]:
     if not isinstance(cfg, dict):
         return {}
     return {k: v for k, v in cfg.items() if k in _CONF_ALLOWLIST}
+
+
+#: Read timeout for the agent's own Redis broker connection, applied only when
+#: the operator's ``broker_transport_options`` set no ``socket_timeout``.
+#: kombu's Redis transport has none by default, so a reply that never arrives
+#: (a half-open connection) parked the inspecting thread forever. It stays
+#: well above kombu's one-second BRPOP poll so an ordinary reply wait never
+#: trips it.
+_AGENT_SOCKET_TIMEOUT = 10.0
+
+
+@contextlib.contextmanager
+def _agent_broker_connection(celery_app: Any) -> Iterator[Any]:
+    """Yield a broker connection the agent owns, never one from ``app.pool``.
+
+    Every control call that waits for replies (``control.inspect``) runs on
+    one of these. A prefork child, including every replacement the pool forks
+    after ``worker_max_tasks_per_child`` / ``worker_max_memory_per_child``, a
+    crash or a time-limit kill, runs kombu's after-fork cleanup on Celery's
+    shared connection pool before it sends the pool its UP message. Closing
+    a Redis channel that still has a BRPOP outstanding reads the reply off
+    the socket the child shares with the worker MainProcess. An inspect whose
+    reply wait timed out, or whose reply a child read first, left exactly
+    such a channel in ``app.pool``, so every later child blocked in that read
+    forever: "Timed out waiting for UP message" for each replacement, and the
+    worker took no tasks until it was restarted. A connection the agent opens
+    and closes itself is in no pool the child cleans up.
+    """
+    conn = celery_app.connection_for_write()
+    options = getattr(conn, "transport_options", None)
+    if isinstance(options, dict) and "socket_timeout" not in options and _is_redis(conn):
+        conn.transport_options = {**options, "socket_timeout": _AGENT_SOCKET_TIMEOUT}
+    try:
+        yield conn
+    finally:
+        # Best-effort: a close error must not discard replies already read.
+        with contextlib.suppress(Exception):
+            conn.release()
+
+
+def _is_redis(conn: Any) -> bool:
+    """True when ``conn`` uses kombu's Redis transport (redis/rediss/sentinel)."""
+    try:
+        return getattr(conn.transport, "driver_type", None) == "redis"
+    except Exception:
+        return False
 
 
 class CeleryEngineAdapter:
@@ -624,8 +671,9 @@ class CeleryEngineAdapter:
         """
         result: dict[str, Any] = {}
         try:
-            inspector = self.celery_app.control.inspect(timeout=1.0)
-            stats = inspector.stats() or {}
+            with _agent_broker_connection(self.celery_app) as conn:
+                inspector = self.celery_app.control.inspect(timeout=1.0, connection=conn)
+                stats = inspector.stats() or {}
             for worker, data in stats.items():
                 result.setdefault(worker, {})["stats"] = data
         except Exception:  # noqa: S110  best-effort stats probe
@@ -652,49 +700,53 @@ class CeleryEngineAdapter:
         """
         result: dict[str, Any] = {}
         try:
-            inspector = self.celery_app.control.inspect(
-                destination=[hostname] if hostname else None,
-                timeout=2.0,
-            )
+            # One agent-owned connection for all five calls; see
+            # _agent_broker_connection for why never one from app.pool.
+            with _agent_broker_connection(self.celery_app) as conn:
+                inspector = self.celery_app.control.inspect(
+                    destination=[hostname] if hostname else None,
+                    timeout=2.0,
+                    connection=conn,
+                )
 
-            # Stats: pool info, broker info, rusage, total tasks
-            stats = inspector.stats() or {}
-            for worker, data in stats.items():
-                result.setdefault(worker, {})["stats"] = data
+                # Stats: pool info, broker info, rusage, total tasks
+                stats = inspector.stats() or {}
+                for worker, data in stats.items():
+                    result.setdefault(worker, {})["stats"] = data
 
-            # Active tasks
-            active = inspector.active() or {}
-            for worker, tasks in active.items():
-                result.setdefault(worker, {})["active"] = tasks
+                # Active tasks
+                active = inspector.active() or {}
+                for worker, tasks in active.items():
+                    result.setdefault(worker, {})["active"] = tasks
 
-            # Active queues
-            queues = inspector.active_queues() or {}
-            for worker, qs in queues.items():
-                result.setdefault(worker, {})["active_queues"] = qs
+                # Active queues
+                queues = inspector.active_queues() or {}
+                for worker, qs in queues.items():
+                    result.setdefault(worker, {})["active_queues"] = qs
 
-            # Registered task names
-            registered = inspector.registered() or {}
-            for worker, names in registered.items():
-                result.setdefault(worker, {})["registered"] = names
+                # Registered task names
+                registered = inspector.registered() or {}
+                for worker, names in registered.items():
+                    result.setdefault(worker, {})["registered"] = names
 
-            # Configuration (may be large AND may include credentialed
-            # keys; allowlist-filter via ``_redact_worker_conf`` before
-            # exposing to the brain. See the ``_CONF_ALLOWLIST`` docstring
-            # for why the allowlist is a source-side allowlist and not a
-            # denylist.)
-            #
-            # ``with_defaults=True`` matters. Celery's default is False, which
-            # returns only the keys an application explicitly overrode. The
-            # settings worth warning an operator about are almost always the
-            # ones nobody set: acks_late off, prefetch 4, reject-on-worker-lost
-            # disabled, no time limits. Without defaults a stock worker reports
-            # an empty configuration and every one of those escapes review,
-            # which is the opposite of the point. The response is larger, but
-            # ``_redact_worker_conf`` cuts it to the allowlist before it
-            # leaves this process.
-            conf = inspector.conf(with_defaults=True) or {}
-            for worker, cfg in conf.items():
-                result.setdefault(worker, {})["conf"] = _redact_worker_conf(cfg)
+                # Configuration (may be large AND may include credentialed
+                # keys; allowlist-filter via ``_redact_worker_conf`` before
+                # exposing to the brain. See the ``_CONF_ALLOWLIST`` docstring
+                # for why the allowlist is a source-side allowlist and not a
+                # denylist.)
+                #
+                # ``with_defaults=True`` matters. Celery's default is False, which
+                # returns only the keys an application explicitly overrode. The
+                # settings worth warning an operator about are almost always the
+                # ones nobody set: acks_late off, prefetch 4, reject-on-worker-lost
+                # disabled, no time limits. Without defaults a stock worker reports
+                # an empty configuration and every one of those escapes review,
+                # which is the opposite of the point. The response is larger, but
+                # ``_redact_worker_conf`` cuts it to the allowlist before it
+                # leaves this process.
+                conf = inspector.conf(with_defaults=True) or {}
+                for worker, cfg in conf.items():
+                    result.setdefault(worker, {})["conf"] = _redact_worker_conf(cfg)
 
         except Exception as exc:
             logger.warning(

@@ -258,6 +258,21 @@ def _on_worker_ready(*, sender: Any = None, **_: Any) -> None:
     works and the next wedges. Between init and ready is sub-second,
     so deferring loses nothing observable.
 
+    Deferring covers only the INITIAL fork. A pool that recycles children
+    (``worker_max_tasks_per_child`` / ``worker_max_memory_per_child``, or
+    a crash or time-limit kill) keeps forking replacements for the life of
+    the worker while the agent's threads are live. Every replacement runs
+    kombu's after-fork cleanup on Celery's shared broker connection pool
+    before it sends UP, and closing a Redis channel with a BRPOP
+    outstanding reads from the socket the child shares with this process.
+    The agent's health refresh used to wait for ``control.inspect``
+    replies on a pooled connection, so one timed-out (or child-stolen)
+    reply wedged every later replacement in that read: "Timed out waiting
+    for UP message" for each one, until the worker was restarted. Reply
+    waits now use an agent-owned connection
+    (``engine._agent_broker_connection``); the invariant is that nothing a
+    child runs before UP touches state an agent thread is using.
+
     Wrapped in :func:`safe_boundary` so even a ``BaseException``
     inside our boot path (``KeyboardInterrupt`` during startup, an
     ``asyncio.CancelledError`` from a deep adapter, ...) cannot
@@ -354,6 +369,46 @@ def _on_worker_ready(*, sender: Any = None, **_: Any) -> None:
         getattr(celery_app, "main", None) or celery_app,
         framework_cls.__name__ if framework_cls else "bare",
     )
+    limits = _pool_recycle_limits(sender, celery_app)
+    if limits:
+        # A breadcrumb for anyone matching z4j against "Timed out waiting for
+        # UP message": the agent's threads are live across every replacement
+        # fork from here on (see the fork-safety note above).
+        logger.info(
+            "z4j worker bootstrap: prefork pool recycles children (%s); agent "
+            "threads stay live across those forks and wait for broker replies "
+            "on their own connection, never on Celery's shared pool",
+            ", ".join(f"{name}={value}" for name, value in limits.items()),
+        )
+
+
+def _pool_recycle_limits(sender: Any, celery_app: Any) -> dict[str, Any]:
+    """Return the child-recycling limits of a prefork pool, if any are set.
+
+    ``--max-tasks-per-child`` / ``--max-memory-per-child`` land on the
+    WorkController (the ``worker_ready`` sender's ``controller``), not on
+    ``app.conf``, so read the controller first and fall back to the conf.
+    Empty when the pool does not fork (solo, threads, gevent, eventlet).
+    """
+    controller = getattr(sender, "controller", None)
+    if controller is None:
+        return {}
+    pool_cls = getattr(controller, "pool_cls", None)
+    pool_name = pool_cls if isinstance(pool_cls, str) else getattr(pool_cls, "__module__", "")
+    if "prefork" not in str(pool_name):
+        return {}
+    conf = getattr(celery_app, "conf", None)
+    limits: dict[str, Any] = {}
+    for name in ("worker_max_tasks_per_child", "worker_max_memory_per_child"):
+        value = getattr(controller, name.removeprefix("worker_"), None)
+        if value is None and conf is not None:
+            try:
+                value = conf.get(name)
+            except Exception:
+                value = None
+        if value:
+            limits[name] = value
+    return limits
 
 
 @safe_boundary
